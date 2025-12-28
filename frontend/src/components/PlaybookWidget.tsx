@@ -17,7 +17,8 @@ import {
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import DynamicForm from './DynamicForm';
+
+
 
 export type WidgetState = 'config' | 'running' | 'finished';
 
@@ -169,8 +170,8 @@ const PlaybookWidget: React.FC<PlaybookWidgetProps> = ({
                 }`}>
                 <div className="flex items-center gap-5">
                     <div className={`p-4 rounded-2xl shadow-lg transition-all duration-500 ${state === 'finished' ? 'bg-green-600 shadow-green-900/20' :
-                            state === 'running' ? 'bg-blue-600 shadow-blue-900/20 animate-pulse' :
-                                'bg-slate-700'
+                        state === 'running' ? 'bg-blue-600 shadow-blue-900/20 animate-pulse' :
+                            'bg-slate-700'
                         }`}>
                         {state === 'finished' ? <CheckCircle2 size={24} color="white" /> :
                             state === 'running' ? <Activity size={24} color="white" /> :
@@ -180,8 +181,8 @@ const PlaybookWidget: React.FC<PlaybookWidgetProps> = ({
                         <div className="flex items-center gap-3">
                             <h3 className="text-xl font-bold text-slate-100 tracking-tight">{playbook.title}</h3>
                             <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-widest border ${state === 'finished' ? 'text-green-400 border-green-500/30 bg-green-500/5' :
-                                    state === 'running' ? 'text-blue-400 border-blue-500/30 bg-blue-500/5' :
-                                        'text-slate-400 border-slate-700 bg-slate-800'
+                                state === 'running' ? 'text-blue-400 border-blue-500/30 bg-blue-500/5' :
+                                    'text-slate-400 border-slate-700 bg-slate-800'
                                 }`}>
                                 {state === 'finished' ? 'Success' : state === 'running' ? 'Progress' : 'Config'}
                             </span>
@@ -275,15 +276,15 @@ const PlaybookWidget: React.FC<PlaybookWidgetProps> = ({
                                 const s = steps.find(st => st.id === step.id);
                                 return (
                                     <div key={i} className={`relative p-5 rounded-2xl border transition-all duration-500 flex flex-col gap-3 ${s?.status === 'running' ? 'bg-blue-600/10 border-blue-500 shadow-lg shadow-blue-900/10 scale-105 z-10' :
-                                            s?.status === 'success' ? 'bg-green-500/5 border-green-500/20' :
-                                                s?.status === 'error' ? 'bg-red-500/5 border-red-500/20' :
-                                                    'bg-slate-950/40 border-slate-800 opacity-40'
+                                        s?.status === 'success' ? 'bg-green-500/5 border-green-500/20' :
+                                            s?.status === 'error' ? 'bg-red-500/5 border-red-500/20' :
+                                                'bg-slate-950/40 border-slate-800 opacity-40'
                                         }`}>
                                         <div className="flex items-center justify-between">
                                             <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${s?.status === 'running' ? 'bg-blue-600' :
-                                                    s?.status === 'success' ? 'bg-green-600' :
-                                                        s?.status === 'error' ? 'bg-red-600' :
-                                                            'bg-slate-800'
+                                                s?.status === 'success' ? 'bg-green-600' :
+                                                    s?.status === 'error' ? 'bg-red-600' :
+                                                        'bg-slate-800'
                                                 }`}>
                                                 {s?.status === 'running' ? <Loader2 size={14} className="animate-spin text-white" /> :
                                                     s?.status === 'success' ? <CheckCircle2 size={14} className="text-white" /> :
@@ -292,8 +293,8 @@ const PlaybookWidget: React.FC<PlaybookWidgetProps> = ({
                                             </div>
                                         </div>
                                         <span className={`text-xs font-bold uppercase tracking-wider ${s?.status === 'running' ? 'text-blue-400' :
-                                                s?.status === 'success' ? 'text-green-400' :
-                                                    'text-slate-500'
+                                            s?.status === 'success' ? 'text-green-400' :
+                                                'text-slate-500'
                                             }`}>
                                             {step.name}
                                         </span>
