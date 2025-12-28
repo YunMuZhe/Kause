@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Button } from '@/components/ui/button';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { Separator } from '@/components/ui/separator';
-import { PlusCircle, MessageSquare, Clock } from 'lucide-react';
+import { Button } from '../ui/button';
+import { ScrollArea } from '../ui/scroll-area';
+import { Separator } from '../ui/separator';
+import { PlusCircle, MessageSquare, Clock, Settings } from 'lucide-react';
 
 interface Conversation {
     id: number;
@@ -13,12 +13,14 @@ interface Conversation {
 interface ChatSidebarProps {
     currentConversationId: number | null;
     onSelectConversation: (id: number | null) => void;
+    onOpenClusterManagement: () => void;
     refreshTrigger: number;
 }
 
 const ChatSidebar: React.FC<ChatSidebarProps> = ({
     currentConversationId,
     onSelectConversation,
+    onOpenClusterManagement,
     refreshTrigger
 }) => {
     const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -73,8 +75,8 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
                             key={conv.id}
                             onClick={() => onSelectConversation(conv.id)}
                             className={`w-full group flex flex-col items-start p-3 rounded-lg transition-all text-left ${currentConversationId === conv.id
-                                    ? 'bg-blue-600/20 border border-blue-500/50'
-                                    : 'hover:bg-slate-800 border border-transparent'
+                                ? 'bg-blue-600/20 border border-blue-500/50'
+                                : 'hover:bg-slate-800 border border-transparent'
                                 }`}
                         >
                             <div className="flex items-center gap-2 w-full mb-1">
@@ -112,6 +114,13 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
                         <p className="text-xs font-medium truncate">K8s Administrator</p>
                         <p className="text-[10px] text-slate-500 truncate">V1.2.0-MVP</p>
                     </div>
+                    <button
+                        onClick={onOpenClusterManagement}
+                        className="p-2 text-slate-500 hover:text-white hover:bg-slate-800 rounded-lg transition-all"
+                        title="集群管理"
+                    >
+                        <Settings size={18} />
+                    </button>
                 </div>
             </div>
         </div>

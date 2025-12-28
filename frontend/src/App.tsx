@@ -1,17 +1,19 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Send, Bot, Terminal, Loader2, CheckCircle2, Search, History, Sparkles } from "lucide-react";
+import { Button } from "./components/ui/button";
+import { Input } from "./components/ui/input";
+import { ScrollArea } from "./components/ui/scroll-area";
+import { Send, Bot, Terminal, Loader2, CheckCircle2, Search, History, Sparkles, ChevronRight } from "lucide-react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import PlaybookCard from './components/PlaybookCard';
+import RemediationCard, { Prescription } from './components/RemediationCard';
 import ChatSidebar from './components/layout/ChatSidebar';
+import ClusterSelector from './components/ClusterSelector';
+import ClusterManagement from './components/ClusterManagement';
 
 interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
-  type?: 'text' | 'widget' | 'status';
+  type?: 'text' | 'widget' | 'status' | 'remediation_result';
   playbookId?: string;
   initialInputs?: any;
   rationale?: string;
@@ -21,7 +23,102 @@ interface Message {
   toolSummary?: string;
   title?: string;
   args?: Record<string, any>;
+  result?: string;
+  isError?: boolean;
+  initialStatus?: 'idle' | 'loading' | 'success' | 'error' | 'dismissed';
+  initialResult?: string | null;
+  prescription?: Prescription;
+  clusterId?: number; // Context tracking
+  conversationId?: number;
 }
+
+const StatusMessage: React.FC<{ m: Message }> = ({ m }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  if (m.statusType === 'thinking') {
+    return (
+      <div className="flex items-center gap-2 text-[#8b949e] text-[13px] py-1.5 px-2">
+        <Loader2 size={13} className="animate-spin text-blue-500/60" />
+        <span>{m.content}</span>
+      </div>
+    );
+  }
+
+  const hasDetails = (m.args && Object.keys(m.args).length > 0) || m.result;
+
+  return (
+    <div className="flex flex-col gap-1.5 w-full">
+      <div
+        className={`flex items-center justify-between gap-3 px-3 py-2 rounded-xl transition-colors ${hasDetails ? 'cursor-pointer hover:bg-white/5' : ''} group`}
+        onClick={() => hasDetails && setIsExpanded(!isExpanded)}
+      >
+        <div className="flex items-center gap-3">
+          <div className={`p-1 rounded-md ${m.statusType === 'tool_call' ? 'text-blue-400/80' : 'text-emerald-400/80'}`}>
+            {m.statusType === 'tool_call' ? <Search size={14} /> : <CheckCircle2 size={14} />}
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[13px] text-[#c9d1d9] font-medium">{m.content}</span>
+            {m.toolName && <span className="text-[10px] font-mono text-[#8b949e] uppercase bg-[#30363d]/30 px-1.5 py-0.5 rounded-md">{m.toolName}</span>}
+          </div>
+        </div>
+        {hasDetails && (
+          <ChevronRight
+            size={14}
+            className={`text-[#8b949e] transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`}
+          />
+        )}
+      </div>
+
+      {isExpanded && (
+        <div className="ml-7 space-y-3 pb-2 animate-in slide-in-from-top-1 duration-200">
+          {m.args && Object.keys(m.args).length > 0 && (
+            <div className="space-y-1">
+              <span className="text-[9px] font-bold text-[#8b949e] uppercase tracking-widest pl-1">Parameters</span>
+              <pre className="text-[11px] font-mono bg-[#0d1117] p-2.5 rounded-lg text-blue-300 overflow-x-auto border border-[#30363d]/50">
+                {JSON.stringify(m.args, null, 2)}
+              </pre>
+            </div>
+          )}
+          {m.result && (
+            <div className="space-y-1">
+              <span className="text-[9px] font-bold text-[#8b949e] uppercase tracking-widest pl-1">Output</span>
+              <pre className="text-[11px] font-mono bg-[#0d1117] p-3 rounded-lg text-[#c9d1d9] border border-[#30363d]/50 max-h-60 overflow-y-auto scrollbar-thin scrollbar-thumb-white/5 leading-relaxed">
+                {m.result}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const ThinkingBlock: React.FC<{ items: Message[] }> = ({ items }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  return (
+    <div className="w-full max-w-2xl px-4 sm:px-6">
+      <div
+        className="flex items-center gap-2.5 text-[#8b949e] hover:text-[#c9d1d9] transition-colors cursor-pointer group select-none py-1.5"
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
+        <div className="flex-shrink-0 text-blue-400/80">
+          <Sparkles size={16} />
+        </div>
+        <span className="text-[13px] font-medium tracking-wide">Show thinking</span>
+        <ChevronRight size={13} className={`transition-transform duration-200 ml-1 ${isExpanded ? 'rotate-90' : ''}`} />
+      </div>
+
+      {isExpanded && (
+        <div className="mt-1 ml-2 pl-4 border-l border-[#30363d] space-y-1 animate-in fade-in slide-in-from-top-1 duration-300">
+          {items.map((item, idx) => (
+            <StatusMessage key={idx} m={item} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
 
 const App: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -30,6 +127,8 @@ const App: React.FC = () => {
   const [currentConversationId, setCurrentConversationId] = useState<number | null>(null);
   const [historyTrigger, setHistoryTrigger] = useState(0);
   const [includeHistory, setIncludeHistory] = useState(false);
+  const [currentClusterId, setCurrentClusterId] = useState<number | null>(null);
+  const [isClusterModalOpen, setIsClusterModalOpen] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom
@@ -81,15 +180,62 @@ const App: React.FC = () => {
               title: w.title,
               args: w.args || w.initial_inputs || {},
               rationale: w.rationale || content.rationale,
-              riskLevel: w.risk_level || content.risk_level
+              riskLevel: w.risk_level || content.risk_level,
+              clusterId: m.cluster_id // Preserve cluster context
             });
           });
+        } else if (m.type === 'status') {
+          try {
+            const statusContent = typeof m.content === 'string' ? JSON.parse(m.content) : m.content;
+            formattedMessages.push({
+              role: m.role as any,
+              content: statusContent.toolName || 'Tool Call',
+              type: 'status',
+              statusType: statusContent.statusType,
+              toolName: statusContent.toolName,
+              args: statusContent.arguments,
+              result: statusContent.result,
+              isError: statusContent.is_error,
+              clusterId: m.cluster_id
+            });
+          } catch (e) {
+            // Fallback for legacy status messages
+            formattedMessages.push({
+              role: m.role as any,
+              content: m.content,
+              type: 'status',
+              clusterId: m.cluster_id
+            });
+          }
+        } else if (m.type === 'remediation_result') {
+          try {
+            const execContent = typeof m.content === 'string' ? JSON.parse(m.content) : m.content;
+            // Find the most recent matching prescription to update its status
+            for (let j = formattedMessages.length - 1; j >= 0; j--) {
+              const prev = formattedMessages[j];
+              if (prev.role === 'assistant' && prev.content && prev.content.includes('<prescription>')) {
+                // We'll trust the order for now, or we could parse and check intent
+                prev.initialStatus = execContent.dismissed ? 'dismissed' : (execContent.success ? 'success' : 'error');
+                prev.initialResult = execContent.output;
+                break;
+              }
+            }
+          } catch (e) {
+            console.error('Failed to parse remediation result:', e);
+          }
         } else {
           formattedMessages.push({
             role: m.role as any,
             content: m.content,
-            type: 'text'
+            type: 'text',
+            clusterId: m.cluster_id,
+            conversationId: id
           });
+
+          // Auto-select cluster based on the latest conversation history if not set
+          if (!currentClusterId && m.cluster_id) {
+            setCurrentClusterId(m.cluster_id);
+          }
         }
       });
 
@@ -105,7 +251,13 @@ const App: React.FC = () => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
 
-    const userMsg: Message = { role: 'user', content: input, type: 'text' };
+    if (!currentClusterId) {
+      alert("请先选择或配置一个集群环境。");
+      setIsClusterModalOpen(true);
+      return;
+    }
+
+    const userMsg: Message = { role: 'user', content: input, type: 'text', clusterId: currentClusterId };
     setMessages(prev => [...prev, userMsg]);
     const userInput = input;
     setInput('');
@@ -118,6 +270,7 @@ const App: React.FC = () => {
         body: JSON.stringify({
           message: userInput,
           conversation_id: currentConversationId,
+          cluster_id: currentClusterId, // Explicit cluster context
           include_history: includeHistory
         }),
       });
@@ -129,7 +282,6 @@ const App: React.FC = () => {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let assistantContent = '';
-      let statusMessages: Message[] = [];
 
       while (true) {
         const { done, value } = await reader.read();
@@ -145,7 +297,6 @@ const App: React.FC = () => {
 
               switch (data.type) {
                 case 'thinking':
-                  // Update or add thinking status
                   setMessages(prev => {
                     const filtered = prev.filter(m => m.type !== 'status' || m.statusType !== 'thinking');
                     return [...filtered, {
@@ -157,74 +308,54 @@ const App: React.FC = () => {
                   });
                   break;
 
-                case 'tool_call':
-                  // Add tool call status
-                  statusMessages.push({
-                    role: 'assistant',
-                    content: `正在调用 ${data.tool}...`,
-                    type: 'status',
-                    statusType: 'tool_call',
-                    toolName: data.tool
-                  });
+                case 'status':
                   setMessages(prev => {
-                    const filtered = prev.filter(m => m.type !== 'status' || m.statusType !== 'thinking');
-                    return [...filtered, ...statusMessages];
+                    // Try to update an existing status message if it's a result for a pending call
+                    if (data.statusType === 'tool_result') {
+                      const lastMsg = prev[prev.length - 1];
+                      if (lastMsg && lastMsg.statusType === 'tool_call' && lastMsg.toolName === data.toolName) {
+                        return [
+                          ...prev.slice(0, -1),
+                          {
+                            ...lastMsg,
+                            statusType: 'tool_result',
+                            result: data.result,
+                            content: data.content
+                          }
+                        ];
+                      }
+                    }
+
+                    const filtered = prev.filter(m => m.type !== 'status' || m.statusType === 'tool_call' || m.statusType === 'tool_result');
+                    return [...filtered, {
+                      role: 'assistant',
+                      content: data.content,
+                      type: 'status',
+                      statusType: data.statusType || 'tool_call',
+                      toolName: data.toolName,
+                      args: data.arguments,
+                      result: data.result
+                    }];
                   });
                   break;
 
-                case 'tool_result':
-                  // Update the last tool_call status to tool_result
-                  statusMessages = statusMessages.map(s =>
-                    s.statusType === 'tool_call' && s.toolName === data.tool
-                      ? { ...s, statusType: 'tool_result' as const, toolSummary: data.summary, content: `${data.tool}: ${data.summary}` }
-                      : s
-                  );
+                case 'assistant':
+                  assistantContent += data.content;
                   setMessages(prev => {
-                    const filtered = prev.filter(m => m.type !== 'status');
-                    return [...filtered, ...statusMessages];
-                  });
-                  break;
-
-                case 'content':
-                  assistantContent += data.delta;
-                  setMessages(prev => {
-                    // Remove status messages and add/update content message
                     const filtered = prev.filter(m => m.type !== 'status');
                     const lastMsg = filtered[filtered.length - 1];
-
-                    // Keep tool results as part of the message display
-                    const toolResultMsgs = statusMessages.filter(s => s.statusType === 'tool_result');
 
                     if (lastMsg && lastMsg.role === 'assistant' && lastMsg.type === 'text') {
                       return [
                         ...filtered.slice(0, -1),
-                        ...toolResultMsgs,
                         { ...lastMsg, content: assistantContent }
                       ];
                     } else {
                       return [
                         ...filtered,
-                        ...toolResultMsgs,
                         { role: 'assistant', content: assistantContent, type: 'text' }
                       ];
                     }
-                  });
-                  break;
-
-                case 'widget':
-                  setMessages(prev => {
-                    const filtered = prev.filter(m => m.type !== 'status');
-                    return [...filtered, {
-                      role: 'assistant',
-                      content: '',
-                      type: 'widget',
-                      playbookId: data.data.playbook_id,
-                      initialInputs: data.data.initial_inputs || data.data.args || {},
-                      title: data.data.title,
-                      args: data.data.args || data.data.initial_inputs || {},
-                      rationale: data.data.rationale,
-                      riskLevel: data.data.risk_level
-                    }];
                   });
                   break;
 
@@ -233,8 +364,7 @@ const App: React.FC = () => {
                     setCurrentConversationId(data.conversation_id);
                     setHistoryTrigger(prev => prev + 1);
                   }
-                  // Clean up any remaining status messages
-                  setMessages(prev => prev.filter(m => m.type !== 'status' || m.statusType === 'tool_result'));
+                  setMessages(prev => prev.filter(m => m.type !== 'status'));
                   break;
 
                 case 'error':
@@ -263,39 +393,13 @@ const App: React.FC = () => {
     }
   };
 
-  const renderStatusMessage = (m: Message) => {
-    if (m.statusType === 'thinking') {
-      return (
-        <div className="flex items-center gap-2 text-[#8b949e] text-sm">
-          <Loader2 size={14} className="animate-spin" />
-          <span>{m.content}</span>
-        </div>
-      );
-    }
-    if (m.statusType === 'tool_call') {
-      return (
-        <div className="flex items-center gap-2 text-blue-400 text-sm">
-          <Search size={14} className="animate-pulse" />
-          <span>{m.content}</span>
-        </div>
-      );
-    }
-    if (m.statusType === 'tool_result') {
-      return (
-        <div className="flex items-center gap-2 text-green-400 text-sm">
-          <CheckCircle2 size={14} />
-          <span>{m.content}</span>
-        </div>
-      );
-    }
-    return null;
-  };
 
   return (
     <div className="flex h-screen w-full bg-[#0a0c10] text-[#e6edf3] font-sans selection:bg-blue-500/30 overflow-hidden">
       <ChatSidebar
         currentConversationId={currentConversationId}
         onSelectConversation={(id) => setCurrentConversationId(id)}
+        onOpenClusterManagement={() => setIsClusterModalOpen(true)}
         refreshTrigger={historyTrigger}
       />
 
@@ -307,10 +411,14 @@ const App: React.FC = () => {
               {currentConversationId ? 'Conversation Session' : 'K8s Cluster Copilot'}
             </h1>
           </div>
-          <div className="flex items-center gap-4 text-xs font-mono opacity-50">
-            <span className="hidden sm:inline">PROMPT ENGINE: GPT-4o-V.2</span>
+          <div className="flex items-center gap-4 text-xs font-mono">
+            <ClusterSelector
+              currentClusterId={currentClusterId}
+              onSelectCluster={(id) => setCurrentClusterId(id)}
+              onAddCluster={() => setIsClusterModalOpen(true)}
+            />
             <div className="w-[1px] h-3 bg-[#30363d]" />
-            <span>K8SQL-Viper</span>
+            <span className="hidden sm:inline opacity-50 uppercase">K8SQL-Viper Engine</span>
           </div>
         </header>
 
@@ -322,65 +430,144 @@ const App: React.FC = () => {
                   <Terminal size={32} className="text-white" />
                 </div>
                 <div className="space-y-2">
-                  <h2 className="text-2xl font-bold tracking-tight text-white">欢迎使用智能排障助手</h2>
+                  <h2 className="text-2xl font-bold tracking-tight text-white">欢迎使用 Kure 智能排障侦探</h2>
                   <p className="text-[#8b949e] max-w-sm mx-auto leading-relaxed">
-                    我可以帮助你查询集群状态、分析资源瓶颈，并自动执行深度故障诊断流程。
+                    我会通过实时工具调用来深度调查您的集群问题，并为您提供精准的“治疗方案”卡片。
                   </p>
                 </div>
               </div>
             )}
 
-            {messages.map((m, i) => (
-              <div
-                key={i}
-                className={`flex gap-4 sm:gap-6 ${m.role === 'user' ? 'flex-row-reverse' : 'flex-row'} animate-in fade-in slide-in-from-bottom-2 duration-300`}
-              >
-                {/* Avatar */}
-                <div className={`flex-shrink-0 w-8 h-8 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center shadow-lg transform transition-transform duration-200 hover:scale-105 ${m.role === 'user'
-                  ? 'bg-gradient-to-br from-[#1f6feb] to-[#0969da] text-white shadow-blue-500/20'
-                  : 'bg-[#161b22] border border-[#30363d] text-[#58a6ff] shadow-black/40'
-                  }`}>
-                  {m.role === 'user' ? <Terminal size={18} /> : <Bot size={20} />}
-                </div>
+            {(() => {
+              const consolidated = [];
+              let pendingThinking = [];
 
-                {/* Message Content */}
-                <div className={`flex flex-col gap-2 min-w-0 ${m.role === 'user' ? 'items-end' : 'items-start'} ${m.type === 'widget' ? 'w-full' : 'max-w-full sm:max-w-[85%]'}`}>
-                  {/* Bubble */}
-                  <div className={`px-4 py-3 sm:px-6 sm:py-3.5 rounded-2xl relative ${m.role === 'user'
-                    ? 'bg-gradient-to-br from-[#0969da] to-[#1f6feb] text-white shadow-xl shadow-blue-900/20 rounded-tr-sm'
-                    : 'bg-[#161b22] border border-[#30363d] shadow-lg rounded-tl-sm'
-                    } ${m.type === 'widget' ? 'w-full !p-0 !bg-transparent !border-none !shadow-none' : 'max-w-full overflow-hidden'} ${m.type === 'status' ? '!py-2 !px-4 !bg-transparent !border-none !shadow-none ring-1 ring-[#30363d]' : ''}`}>
+              for (let i = 0; i < messages.length; i++) {
+                const m = messages[i];
+                if (m.type === 'status') {
+                  pendingThinking.push(m);
+                } else if (m.role === 'assistant') {
+                  // Merge any pending thinking into this assistant message
+                  consolidated.push({
+                    ...m,
+                    thinkingSteps: pendingThinking.length > 0 ? [...pendingThinking] : undefined
+                  });
+                  pendingThinking = [];
+                } else {
+                  // If we have thinking steps but no assistant message follow-up immediately
+                  // (e.g. streaming or final state before response), flush them
+                  if (pendingThinking.length > 0) {
+                    consolidated.push({
+                      role: 'assistant',
+                      type: 'thinking_only',
+                      thinkingSteps: [...pendingThinking],
+                      content: ''
+                    });
+                    pendingThinking = [];
+                  }
+                  consolidated.push(m);
+                }
+              }
+              // Flush remaining
+              if (pendingThinking.length > 0) {
+                consolidated.push({
+                  role: 'assistant',
+                  type: 'thinking_only',
+                  thinkingSteps: pendingThinking,
+                  content: ''
+                });
+              }
 
-                    {/* User message subtle glow */}
-                    {m.role === 'user' && (
-                      <div className="absolute inset-0 bg-white/5 opacity-0 group-hover:opacity-100 transition-opacity" />
-                    )}
+              return consolidated.map((m: any, i) => {
+                const prescriptionRegex = /<prescription>([\s\S]*?)<\/prescription>/;
+                const match = m.content.match(prescriptionRegex);
+                let displayContent = m.content;
+                let prescriptionData: Prescription | null = null;
+                let isStreamingPrescription = false;
 
-                    {m.type === 'widget' ? (
-                      <div className="w-full">
-                        <PlaybookCard
-                          key={`widget-${i}`}
-                          playbookId={m.playbookId || ''}
-                          title={m.title || '智能修复剧本'}
-                          args={m.args || m.initialInputs || {}}
-                          rationale={m.rationale || '建议执行此排障流程以恢复服务。'}
-                        />
+                if (match) {
+                  try {
+                    prescriptionData = JSON.parse(match[1].trim());
+                    displayContent = m.content.replace(prescriptionRegex, '').trim();
+                  } catch (e) {
+                    displayContent = m.content.split('<prescription>')[0].trim();
+                    isStreamingPrescription = true;
+                  }
+                } else if (m.content.includes('<prescription>')) {
+                  displayContent = m.content.split('<prescription>')[0].trim();
+                  isStreamingPrescription = true;
+                }
+
+                return (
+                  <div
+                    key={i}
+                    className={`flex gap-4 sm:gap-6 ${m.role === 'user' ? 'flex-row-reverse' : 'flex-row'} animate-in fade-in slide-in-from-bottom-2 duration-300`}
+                  >
+                    {/* Avatar */}
+                    <div className={`flex-shrink-0 w-8 h-8 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center shadow-lg transform transition-transform duration-200 hover:scale-105 ${m.role === 'user'
+                      ? 'bg-gradient-to-br from-[#1f6feb] to-[#0969da] text-white shadow-blue-500/20'
+                      : 'bg-[#161b22] border border-[#30363d] text-[#58a6ff] shadow-black/40'
+                      }`}>
+                      {m.role === 'user' ? <Terminal size={18} /> : <Bot size={20} />}
+                    </div>
+
+                    {/* Content Area */}
+                    <div className={`flex flex-col gap-2 min-w-0 ${m.role === 'user' ? 'items-end' : 'items-start'} ${m.type === 'widget' || prescriptionData ? 'w-full' : 'max-w-full sm:max-w-[85%]'}`}>
+
+                      {/* Unified Bubble for Assistant (Thinking + Text) */}
+                      <div className={`flex flex-col w-full ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
+                        {/* Thinking Block inside the same vertical space */}
+                        {m.thinkingSteps && (
+                          <div className="w-full mb-1">
+                            <ThinkingBlock items={m.thinkingSteps} />
+                          </div>
+                        )}
+
+                        {displayContent && (
+                          <div className={`px-4 py-3 sm:px-6 sm:py-3.5 rounded-2xl relative ${m.role === 'user'
+                            ? 'bg-gradient-to-br from-[#0969da] to-[#1f6feb] text-white shadow-xl shadow-blue-900/20 rounded-tr-sm'
+                            : 'bg-transparent text-[#c9d1d9]'
+                            } ${m.type === 'widget' ? 'w-full !p-0 !bg-transparent !border-none !shadow-none' : 'max-w-full overflow-hidden'}`}>
+
+                            {/* User message sparkle/glow if needed */}
+                            {m.role === 'user' && (
+                              <div className="absolute inset-0 bg-white/5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
+                            )}
+
+                            <div className={`prose prose-invert prose-sm sm:prose-base max-w-full break-words overflow-x-auto scrollbar-thin scrollbar-thumb-white/10 ${m.role === 'user' ? 'prose-p:text-blue-50' : 'text-[#c9d1d9]'}`}>
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                {displayContent}
+                              </ReactMarkdown>
+                            </div>
+                          </div>
+                        )}
                       </div>
-                    ) : m.type === 'status' ? (
-                      renderStatusMessage(m)
-                    ) : (
-                      <div className={`prose prose-invert prose-sm sm:prose-base max-w-full break-words overflow-x-auto scrollbar-thin scrollbar-thumb-white/10 ${m.role === 'user' ? 'prose-p:text-blue-50' : 'text-[#c9d1d9]'}`}>
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                          {m.content}
-                        </ReactMarkdown>
-                      </div>
-                    )}
+
+                      {/* Prescription Card */}
+                      {prescriptionData && (
+                        <div className="w-full max-w-2xl px-1">
+                          <RemediationCard
+                            prescription={prescriptionData}
+                            clusterId={m.clusterId || currentClusterId || undefined}
+                            conversationId={currentConversationId || undefined}
+                            initialStatus={m.initialStatus}
+                            initialResult={m.initialResult}
+                          />
+                        </div>
+                      )}
+
+                      {/* Streaming Prescription Placeholder */}
+                      {isStreamingPrescription && (
+                        <div className="w-full max-w-md mt-2 ml-1 p-4 border border-blue-500/20 rounded-2xl bg-blue-500/5 backdrop-blur-sm animate-pulse flex items-center gap-3">
+                          <Loader2 size={16} className="text-blue-500 animate-spin" />
+                          <span className="text-[11px] text-blue-400 font-bold uppercase tracking-wider">专家系统正在生成治疗方案...</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
-
-                  {/* Optional: Add timestamp or role label here if needed */}
-                </div>
-              </div>
-            ))}
+                );
+              });
+            })()}
 
           </div>
         </ScrollArea>
@@ -445,6 +632,13 @@ const App: React.FC = () => {
           </form>
         </div>
       </main>
+
+      {/* Cluster Management Modal */}
+      <ClusterManagement
+        isOpen={isClusterModalOpen}
+        onClose={() => setIsClusterModalOpen(false)}
+        onClusterAdded={() => setHistoryTrigger(prev => prev + 1)} // Refresh list if needed (though Selector does it)
+      />
     </div>
   );
 };

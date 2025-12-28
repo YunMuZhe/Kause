@@ -17,11 +17,12 @@ interface PlaybookCardProps {
     title: string;
     rationale: string;
     args: Record<string, any>;
+    clusterId?: number;
 }
 
 type ExecutionStatus = 'idle' | 'running' | 'success' | 'error';
 
-const PlaybookCard: React.FC<PlaybookCardProps> = ({ playbookId, title, rationale, args }) => {
+const PlaybookCard: React.FC<PlaybookCardProps> = ({ playbookId, title, rationale, args, clusterId }) => {
     const [status, setStatus] = useState<ExecutionStatus>('idle');
     const [logs, setLogs] = useState<string[]>([]);
     const [currentStatusMsg, setCurrentStatusMsg] = useState<string>('');
@@ -57,7 +58,11 @@ const PlaybookCard: React.FC<PlaybookCardProps> = ({ playbookId, title, rational
             const response = await fetch('/api/playbooks/execute', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ playbook_id: playbookId, params: editableArgs }),
+                body: JSON.stringify({
+                    playbook_id: playbookId,
+                    params: editableArgs,
+                    cluster_id: clusterId
+                }),
             });
 
             if (!response.ok) {

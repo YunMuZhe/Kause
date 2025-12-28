@@ -34,6 +34,7 @@ class AppSettings(BaseSettings):
     debug_mode: bool = False
     log_level: str = "INFO"
     go_server_path: str = "../mcp-server/mcp-server"
+    encryption_key: SecretStr = SecretStr("k8s-insight-default-encryption-key-32b")
     
     llm: LLMSettings = LLMSettings()
     db: DatabaseSettings = DatabaseSettings()

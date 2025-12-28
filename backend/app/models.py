@@ -6,8 +6,8 @@ from sqlalchemy import Column, Text
 class Cluster(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str = Field(index=True, unique=True)
-    kubeconfig: str
-    description: Optional[str] = None
+    kubeconfig: str = Field(sa_column=Column(Text))
+    description: Optional[str] = Field(default=None, sa_column=Column(Text))
 
 class Conversation(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)

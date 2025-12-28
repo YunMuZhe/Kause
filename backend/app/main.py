@@ -1,8 +1,9 @@
 import os
 import asyncio
 import json
+import tempfile
 from contextlib import asynccontextmanager
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Depends
@@ -16,11 +17,9 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from sqlmodel import Session, select
 
-from . import models, database
-from .playbook_engine import PlaybookEngine
+from . import models, database, security
 from .database import create_db_and_tables, get_session
 from .config import get_settings
-from .playbooks.registry import registry
 
 settings = get_settings()
 
@@ -28,54 +27,77 @@ load_dotenv()
 
 # Configuration
 GO_SERVER_PATH = os.path.abspath(settings.go_server_path)
-# Playbooks are now in the same directory as main.py
-PLAYBOOKS_DIR = os.path.join(os.path.dirname(__file__), "playbooks")
-
-if not os.path.exists(PLAYBOOKS_DIR):
-    os.makedirs(PLAYBOOKS_DIR)
 
 client = OpenAI(
     api_key=settings.llm.api_key.get_secret_value() if settings.llm.api_key else None,
     base_url=settings.llm.base_url
 )
 
-# Global state for MCP session and Playbook Engine
-mcp_session: Optional[ClientSession] = None
-playbook_engine: Optional[PlaybookEngine] = None
+# --- Multi-Cluster Session Manager ---
+class ClusterSessionManager:
+    def __init__(self):
+        self._sessions: Dict[int, Tuple[ClientSession, Any]] = {} # id -> (session, exit_stack)
+        self._lock = asyncio.Lock()
+
+    async def get_mcp_session(self, cluster_id: int, db: Session) -> ClientSession:
+        async with self._lock:
+            if cluster_id in self._sessions:
+                return self._sessions[cluster_id][0]
+            
+            # Initialize new session for cluster
+            cluster = db.get(models.Cluster, cluster_id)
+            if not cluster:
+                raise HTTPException(status_code=404, detail="Cluster not found")
+            
+            kubeconfig_content = security.decrypt_data(cluster.kubeconfig)
+            if not kubeconfig_content:
+                raise HTTPException(status_code=500, detail="Failed to decrypt kubeconfig")
+            
+            # Use a temporary file for KUBECONFIG
+            tmp = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.kubeconfig')
+            tmp.write(kubeconfig_content)
+            tmp.close()
+            
+            try:
+                env = os.environ.copy()
+                env["KUBECONFIG"] = tmp.name
+                
+                server_params = StdioServerParameters(
+                    command=GO_SERVER_PATH,
+                    args=[],
+                    env=env
+                )
+                
+                from contextlib import AsyncExitStack
+                stack = AsyncExitStack()
+                
+                print(f"Starting MCP server for cluster {cluster.name}...")
+                client_ctx = stdio_client(server_params)
+                read, write = await stack.enter_async_context(client_ctx)
+                session = await stack.enter_async_context(ClientSession(read, write))
+                await session.initialize()
+                
+                self._sessions[cluster_id] = (session, stack)
+                return session
+            except Exception as e:
+                if os.path.exists(tmp.name):
+                    os.unlink(tmp.name)
+                raise HTTPException(status_code=500, detail=f"Failed to start MCP server: {str(e)}")
+
+    async def close_all(self):
+        for cluster_id, (session, stack) in self._sessions.items():
+            await stack.aclose()
+        self._sessions.clear()
+
+session_manager = ClusterSessionManager()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global mcp_session, playbook_engine
-    
     # Initialize DB
     create_db_and_tables()
-    
-    # Start Go MCP server
-    server_params = StdioServerParameters(
-        command=GO_SERVER_PATH,
-        args=[],
-        env=os.environ.copy()
-    )
-    
-    print(f"Starting MCP server at {GO_SERVER_PATH}...")
-    
-    # Initialize stdio client
-    async with stdio_client(server_params) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            mcp_session = session
-            print("MCP server initialized and session established.")
-            
-            # Initialize Playbook Engine
-            playbook_engine = PlaybookEngine(
-                playbook_dir=PLAYBOOKS_DIR,
-                mcp_session=mcp_session,
-                openai_client=client,
-                model_name=settings.llm.model_name
-            )
-            
-            yield
-            print("Shutting down...")
+    yield
+    # Cleanup
+    await session_manager.close_all()
 
 app = FastAPI(lifespan=lifespan)
 
@@ -86,143 +108,144 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- Cluster Management Endpoints ---
+class ClusterCreateRequest(BaseModel):
+    name: str
+    kubeconfig: str
+    description: Optional[str] = None
+
+@app.post("/api/clusters")
+async def add_cluster(request: ClusterCreateRequest, db: Session = Depends(get_session)):
+    encrypted_config = security.encrypt_data(request.kubeconfig)
+    cluster = models.Cluster(
+        name=request.name,
+        kubeconfig=encrypted_config,
+        description=request.description
+    )
+    db.add(cluster)
+    try:
+        db.commit()
+        db.refresh(cluster)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Cluster already exists or error: {str(e)}")
+    
+    return {"id": cluster.id, "name": cluster.name}
+
+@app.get("/api/clusters")
+async def list_clusters(db: Session = Depends(get_session)):
+    clusters = db.exec(select(models.Cluster)).all()
+    return [{"id": c.id, "name": c.name, "description": c.description} for c in clusters]
+
+@app.delete("/api/clusters/{cluster_id}")
+async def delete_cluster(cluster_id: int, db: Session = Depends(get_session)):
+    cluster = db.get(models.Cluster, cluster_id)
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+    db.delete(cluster)
+    db.commit()
+    return {"status": "deleted"}
+
 class ChatRequest(BaseModel):
     message: str
     conversation_id: Optional[int] = None
-    include_history: bool = True  # Context Control: whether to include history in LLM inference
+    cluster_id: Optional[int] = None
+    include_history: bool = True
 
-class PlaybookExecuteRequest(BaseModel):
-    playbook_id: str
-    params: Dict[str, Any]
-
-
-# === Two-Pass Architecture: Librarian Agent ===
-async def run_librarian_agent(user_message: str, diagnosis: str, playbooks_data: list) -> Optional[dict]:
+# === Two-Pass Architecture: Surgeon Agent ===
+async def run_surgeon_agent(user_message: str, investigation_log: str, write_tools: list) -> Optional[str]:
     """
-    Pass 2: Librarian Agent - Matches diagnosis to playbooks silently.
-    Returns widget data if a playbook should be proposed, None otherwise.
+    Pass 2: Surgeon Agent - Designs a customized remediation plan (Prescription) 
+    based on the detective's investigation.
     """
-    if not playbooks_data:
+    if not write_tools:
+        print("--- Surgeon: No write tools available ---")
         return None
 
-    playbook_ids = [pb['id'] for pb in playbooks_data]
-    summaries = []
-    for pb in playbooks_data:
-        inputs_info = ""
-        if "inputs" in pb: # Legacy YAML
-            inputs_info = ", ".join([f"{i['key']} ({i.get('label', '')})" for i in pb["inputs"]])
-        elif "args_model" in pb: # New Modular
-            props = pb["args_model"].get("properties", {})
-            required = pb["args_model"].get("required", [])
-            inputs_info = ", ".join([f"{k} {'(required)' if k in required else ''}" for k in props.keys()])
-        
-        summaries.append(f"- ID: `{pb['id']}`\n  Title: {pb['title']}\n  Summary: {pb['summary']}\n  Required Inputs: {inputs_info}")
-    
-    playbooks_summary = "\n".join(summaries)
+    surgeon_prompt = f"""你是一个 K8s 资深专家组件（外科医生模式）。你的任务是根据“侦探”给出的调查结论，设计并返回一个【结构化治疗方案 (Prescription)】。
 
-    librarian_prompt = f"""你是一个 Playbook 匹配专家。你的唯一任务是根据用户问题和诊断结论，判断是否需要推荐一个自动化诊断剧本。
+## 用户请求
+{user_message}
 
-## 可用 Playbooks
-{playbooks_summary}
+## 侦探的调查结论与工具输出
+{investigation_log}
 
-## 匹配规则
-1. **只有当诊断明确指向某个具体问题时才推荐** - 例如：Pod 重启、网络不通、资源不足等
-2. **纯查询请求不需要推荐** - 如果用户只是问"有哪些 pods"、"列出 services"等，不要推荐
-3. **诊断结论中没有发现问题时不推荐** - 如果一切正常，不需要运行 playbook
-4. **使用 propose_playbook 工具来推荐** - 如果决定推荐，必须调用此工具
+## 你可以使用的【写操作】工具库 (Remediation Tools)
+{json.dumps(write_tools, indent=2)}
 
-## 重要
-- 如果不需要推荐任何 Playbook，直接回复"无需推荐"，不要调用工具
-- 只有在确实需要深度诊断时才推荐 Playbook"""
+## 核心规则
+1. **必须返回卡片**：如果侦探发现了明确的问题（如副本数不一致、Pod 异常、资源不足、配置错误），你必须选择一个合适的【写操作】工具。
+2. **工具选择建议**：
+   - 如果 Pod 镜像更新后崩溃 -> 尝试 `rollback_deployment`。
+   - 如果只是某个 Pod 挂了但 Deployment 没问题 -> 尝试 `delete_pod` 让它自动重建。
+   - 如果修改了 ConfigMap 或 Secret 需要生效 -> 尝试 `restart_deployment` 进行滚动重启。
+   - 如果负载过高 -> 尝试 `scale_deployment` 扩容。
+3. **严禁纯文本建议**：不要只说“你应该执行...”，必须输出下面定义的 <prescription> 标签。
+4. **参数一致性**：确保参数（Namespace, Name, Replicas等）与侦探调查出的结果完全一致。
 
-    propose_playbook_tool = {
-        "type": "function",
-        "function": {
-            "name": "propose_playbook",
-            "description": "Propose a diagnostic playbook to the user for execution.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "playbook_id": {
-                        "type": "string",
-                        "description": f"The unique ID of the playbook to propose.",
-                        "enum": playbook_ids
-                    },
-                    "rationale": {
-                        "type": "string",
-                        "description": "A brief explanation (1-2 sentences) of why this playbook is recommended."
-                    },
-                    "risk_level": {
-                        "type": "string",
-                        "enum": ["low", "medium", "high"],
-                        "description": "Risk level: 'low' for read-only, 'medium' for safe modifications, 'high' for potentially disruptive."
-                    },
-                    "suggested_inputs": {
-                        "type": "object",
-                        "description": "Pre-filled input values for the playbook based on the context."
-                    }
-                },
-                "required": ["playbook_id", "rationale", "risk_level"]
-            }
-        }
-    }
+## 输出格式 (必须包含此标签)
+必须返回且仅返回一个符合以下结构的 <prescription> 标签：
+<prescription>
+{{
+  "intent": "操作的简短描述 (例如：回滚 payment-service 到上个版本)",
+  "reasoning": "结合调查结果解释为什么执行此操作 (例如：侦探报告显示新镜像启动失败，回滚可快速恢复业务)",
+  "tool_name": "具体要调用的 MCP 工具名称",
+  "arguments": {{ ... 具体的参数，如 namespace, name 等 ... }},
+  "risk_level": "LOW|MEDIUM|HIGH"
+}}
+</prescription>
+
+如果你认为没有任何工具可以解决问题，或者不需要任何操作，请回复“暂无建议方案”。"""
 
     try:
-        print(f"--- Librarian Agent: Matching playbooks for diagnosis ---")
+        print(f"--- Surgeon Agent: Generating prescription ---")
         response = client.chat.completions.create(
             model=settings.llm.model_name,
             messages=[
-                {"role": "system", "content": librarian_prompt},
-                {"role": "user", "content": f"用户问题: {user_message}\n\n诊断结论:\n{diagnosis}"}
+                {"role": "system", "content": surgeon_prompt},
+                {"role": "user", "content": "请基于调查结果，给出你的 <prescription> 方案。"}
             ],
-            tools=[propose_playbook_tool],
-            tool_choice="auto"
+            temperature=0.1
         )
 
-        response_message = response.choices[0].message
-        tool_calls = response_message.tool_calls
-
-        if tool_calls:
-            for tool_call in tool_calls:
-                if tool_call.function.name == "propose_playbook":
-                    args = json.loads(tool_call.function.arguments)
-                    print(f"--- Librarian matched playbook: {args.get('playbook_id')} ---")
-                    return {
-                        "playbook_id": args.get("playbook_id", ""),
-                        "rationale": args.get("rationale", ""),
-                        "risk_level": args.get("risk_level", "low"),
-                        "initial_inputs": args.get("suggested_inputs", {})
-                    }
-
-        print(f"--- Librarian: No playbook recommended ---")
+        content = response.choices[0].message.content or ""
+        print(f"--- Surgeon Output ---\n{content}\n----------------------")
+        
+        if "<prescription>" in content:
+            return content
+        
         return None
 
     except Exception as e:
-        print(f"--- Librarian Agent Error: {e} ---")
+        print(f"--- Surgeon Agent Error: {e} ---")
         return None
 
 @app.post("/chat")
 async def chat(request: ChatRequest, db: Session = Depends(get_session)):
-    if not mcp_session or not playbook_engine:
-        raise HTTPException(status_code=503, detail="Server not ready")
+    # 1. Resolve Cluster Context
+    cluster_id = request.cluster_id
+    if not cluster_id:
+        conversation = db.get(models.Conversation, request.conversation_id) if request.conversation_id else None
+        if conversation and conversation.cluster_id:
+            cluster_id = conversation.cluster_id
+        else:
+            first_cluster = db.exec(select(models.Cluster)).first()
+            if not first_cluster:
+                raise HTTPException(status_code=503, detail="No clusters configured.")
+            cluster_id = first_cluster.id
 
-    # 0. Handle Conversation Persistence (before streaming)
-    if request.conversation_id:
-        conversation = db.get(models.Conversation, request.conversation_id)
-        if not conversation:
-            raise HTTPException(status_code=404, detail="Conversation not found")
-    else:
-        title = request.message[:20] + "..." if len(request.message) > 20 else request.message
-        conversation = models.Conversation(title=title)
-        db.add(conversation)
+    # 2. Get/Create Conversation
+    if not request.conversation_id:
+        title = request.message[:50]
+        new_conv = models.Conversation(title=title, cluster_id=cluster_id)
+        db.add(new_conv)
         db.commit()
-        db.refresh(conversation)
-
-    conversation_id = conversation.id
-
-    # Save user message
+        db.refresh(new_conv)
+        request.conversation_id = new_conv.id
+    
+    # 3. Save User Message
     user_msg = models.Message(
-        conversation_id=conversation_id,
+        conversation_id=request.conversation_id,
         role="user",
         content=request.message,
         type="text"
@@ -230,266 +253,213 @@ async def chat(request: ChatRequest, db: Session = Depends(get_session)):
     db.add(user_msg)
     db.commit()
 
-    # Load history from DB
-    messages_db = db.exec(select(models.Message).where(models.Message.conversation_id == conversation_id).order_by(models.Message.created_at)).all()
-
-    # Get available tools and playbooks
-    tools_list = await mcp_session.list_tools()
-    openai_tools = []
-    for tool in tools_list.tools:
-        openai_tools.append({
+    # 4. Get MCP Session
+    mcp_session = await session_manager.get_mcp_session(cluster_id, db)
+    
+    # 5. Get available tools and categorize them
+    mcp_tools = await mcp_session.list_tools()
+    
+    read_tools = []
+    write_tools = []
+    READ_PREFIXES = ["get_", "list_", "describe_", "explain_", "check_"]
+    
+    for tool in mcp_tools.tools:
+        tool_schema = {
             "type": "function",
             "function": {
                 "name": tool.name,
                 "description": tool.description,
                 "parameters": tool.inputSchema
             }
-        })
+        }
+        
+        is_read = any(tool.name.startswith(p) for p in READ_PREFIXES) or "log" in tool.name or "event" in tool.name
+        
+        if is_read:
+            read_tools.append(tool_schema)
+        else:
+            write_tools.append(tool_schema)
 
-    # Get playbooks data for Librarian Agent (Pass 2)
-    playbooks_data = playbook_engine.list_playbooks() + registry.list_playbooks()
+    system_prompt = f"""你是一个 Kure AI 排障侦探。你的任务是调查并诊断 Kubernetes 集群中的问题。
 
-    # Detective Agent system prompt (NO playbook knowledge)
-    tools_desc = "\n".join([f"- `{t.name}`: {t.description}" for t in tools_list.tools])
-
-    system_prompt = f"""你是一个专业的 Kubernetes 排障专家。
-你有权限调用实时 K8S 集群查询工具来诊断问题。
-
-# CRITICAL: 零幻觉原则 (Zero Hallucination Policy)
-
-**你绝对不能编造任何 Kubernetes 资源信息。**
-- 当用户询问集群中的资源（如 Pods、Deployments、Services、Ingresses 等）时，你 **必须** 调用相应的工具获取真实数据。
-- **禁止** 在没有调用工具的情况下返回任何资源名称、状态或数量。
-- 如果你不确定该用哪个工具，先调用工具查询，再回答。
-
-# ⚠️ 重要：忽略历史对话中的资源数据
-
-**历史对话中出现的任何资源名称（如 Pod 名、Deployment 名、Service 名等）可能已经过时或不准确。**
-- 每次用户询问资源信息时，你 **必须重新调用工具** 获取最新数据。
-- **绝对禁止** 直接引用历史对话中的资源名称或状态。
-- 工具返回的数据才是 **唯一可信来源**。
-
-# 可用工具列表 (Available Tools)
-
-{tools_desc}
-
-# 工作流程 (Workflow)
-
-### 1. 资源查询 (Query Mode)
-- **触发条件**: 用户询问集群资源信息（如 "有哪些 pods", "列出 deployments", "查看 ingress"）
-- **动作**: 调用对应的工具（如 `list_pods`, `list_deployments`, `get_ingresses`）
-- **输出**: 将工具返回的 **真实数据** 以 markdown 格式展示给用户
-
-### 2. 问题诊断 (Diagnosis Mode)
-- **触发条件**: 用户描述问题需要诊断（如 "为什么 pod 一直重启", "服务访问不通", "ingress 配置有问题吗"）
-- **动作**:
-  1. 调用相关工具收集数据
-  2. 分析数据，找出问题根因
-  3. 给出诊断结论和建议的排查方向
-
-### 3. 数据展示 (Output Fidelity)
-- 使用工具获取数据后，**必须** 在回复中包含工具返回的原始数据（使用 markdown 代码块）
-- 不要只做总结，用户需要看到实际内容
-
-# 安全规则 (Safety Rules)
-- **零幻觉**: 绝对不要编造资源名称、状态或任何集群数据
-- **工具优先**: 任何涉及集群状态的问题都要先调用工具
+## 工作准则
+1. **只负责调查**：使用 Read-only 工具（获取日志、描述资源、列出事件）查明真相。
+2. **严禁修复建议**：不要在回复中提供 `kubectl` 命令、YAML 配置或任何具体的修复指令。那是“外科医生”的活。
+3. **只说结论**：客观、清晰地总结你发现了什么（例如：“Pod 状态为 Ready，但副本数目前仅为1”）。
+4. **简洁专业**：你的回复结束后，后续会有专门的组件根据你的调查结论生成修复方案。
 """
 
-    print(f"--- Chat Request: {request.message} ---")
-    print(f"--- Context Control: include_history={request.include_history} ---")
     llm_messages = [{"role": "system", "content": system_prompt}]
+    messages_db = db.exec(select(models.Message).where(models.Message.conversation_id == request.conversation_id)).all()
 
-    # Context Control: Conditionally load history
-    # Always persist to DB (handled above), but only include in LLM context if flag is ON
     if request.include_history:
-        # Add history but only user messages to avoid hallucination contamination
-        # Assistant responses may contain hallucinated data that could influence future responses
-        print(f"--- Loading {len(messages_db)} history messages (filtering to user messages only) ---")
-        for m in messages_db:
-            if m.role == "user":
+        for m in messages_db[:-1]: 
+            if m.role == "user" or (m.role == "assistant" and m.type == "text"):
                 llm_messages.append({"role": m.role, "content": m.content})
-                print(f"  [user]: {m.content[:100]}..." if len(m.content) > 100 else f"  [user]: {m.content}")
-            else:
-                print(f"  [SKIPPED {m.role}]: {m.content[:50]}..." if len(m.content) > 50 else f"  [SKIPPED {m.role}]: {m.content}")
-    else:
-        print(f"--- FRESH START MODE: Skipping {len(messages_db)} history messages ---")
-        # Only add the current user message (already in messages_db as the last item)
-        llm_messages.append({"role": "user", "content": request.message})
+    
+    llm_messages.append({"role": "user", "content": request.message})
 
     async def event_generator():
         nonlocal llm_messages
         full_content = ""
 
         try:
-            # === PASS 1: Detective Agent ===
-            # Send thinking event
-            yield {"data": json.dumps({"type": "thinking", "message": "正在分析您的问题..."})}
+            # === PASS 1: Detective Agent (Investigation) ===
+            yield {"data": json.dumps({"type": "thinking", "message": "侦查中：正在扫描集群状态..."})}
 
-            # First LLM call (non-streaming to get tool calls)
-            response = client.chat.completions.create(
-                model=settings.llm.model_name,
-                messages=llm_messages,
-                tools=openai_tools,
-                tool_choice="auto"
-            )
-
-            response_message = response.choices[0].message
-            content = response_message.content or ""
-            tool_calls = response_message.tool_calls
-            print(f"--- Detective Response: content='{content[:200] if content else ''}...', tool_calls={len(tool_calls) if tool_calls else 0} ---")
-
-            # Handle MCP tool calls
-            if tool_calls:
-                tool_results_text = []
-
-                for tool_call in tool_calls:
-                    function_name = tool_call.function.name
-                    function_args = json.loads(tool_call.function.arguments)
-
-                    # Send tool_call event
-                    yield {"data": json.dumps({
-                        "type": "tool_call",
-                        "tool": function_name,
-                        "args": function_args
-                    })}
-
-                    print(f"Calling tool: {function_name} with {function_args}")
-                    tool_result = await mcp_session.call_tool(function_name, function_args)
-
-                    result_text = "".join([item.text for item in tool_result.content if hasattr(item, "text")])
-                    print(f"Tool Result ({function_name}): {result_text[:500]}...")
-
-                    # Generate summary for tool result
-                    try:
-                        result_data = json.loads(result_text)
-                        if isinstance(result_data, list):
-                            summary = f"获取到 {len(result_data)} 条记录"
-                        else:
-                            summary = f"获取到数据"
-                    except:
-                        summary = f"获取到 {len(result_text)} 字符数据"
-
-                    # Send tool_result event
-                    yield {"data": json.dumps({
-                        "type": "tool_result",
-                        "tool": function_name,
-                        "summary": summary
-                    })}
-
-                    # Collect tool result for later
-                    tool_results_text.append(f"工具 {function_name} 返回的数据:\n```json\n{result_text}\n```")
-
-                # Add tool results to messages
-                llm_messages.append({
-                    "role": "user",
-                    "content": f"""以下是工具调用返回的真实数据，请基于这些数据回答用户的问题。
-
-{chr(10).join(tool_results_text)}
-
-【重要提醒】
-- 上面的数据是从 Kubernetes 集群实时查询的真实数据
-- 你必须基于这些真实数据来回答
-- 禁止编造任何资源名称、状态或数据
-- 必须原样引用工具返回的内容"""
-                })
-
-                # Final LLM call with streaming
-                yield {"data": json.dumps({"type": "thinking", "message": "正在生成诊断结论..."})}
-
-                try:
-                    final_response = client.chat.completions.create(
-                        model=settings.llm.model_name,
-                        messages=llm_messages,
-                        stream=True
-                    )
-
-                    print("--- Detective streaming response started ---")
-                    for chunk in final_response:
-                        if chunk.choices and chunk.choices[0].delta.content:
-                            delta = chunk.choices[0].delta.content
-                            full_content += delta
-                            yield {"data": json.dumps({"type": "content", "delta": delta})}
-
-                    print(f"--- Detective streaming complete, total content length: {len(full_content)} ---")
-                except Exception as stream_error:
-                    print(f"--- Detective streaming error: {stream_error} ---")
-                    yield {"data": json.dumps({"type": "error", "message": f"流式生成失败: {str(stream_error)}"})}
-                    return
-
-            else:
-                # No tool calls, stream the content directly
-                if content:
-                    for char in content:
-                        full_content += char
-                        yield {"data": json.dumps({"type": "content", "delta": char})}
-                        await asyncio.sleep(0.01)
-
-            # === PASS 2: Librarian Agent ===
-            # Only run if we have diagnosis content
-            if full_content:
-                yield {"data": json.dumps({"type": "thinking", "message": "正在匹配诊断剧本..."})}
-
-                librarian_result = await run_librarian_agent(
-                    user_message=request.message,
-                    diagnosis=full_content,
-                    playbooks_data=playbooks_data
+            # Investigation loop
+            run_limit = 5
+            for _ in range(run_limit):
+                response = client.chat.completions.create(
+                    model=settings.llm.model_name,
+                    messages=llm_messages,
+                    tools=read_tools if read_tools else None,
+                    tool_choice="auto" if read_tools else None
                 )
 
-                if librarian_result:
-                    print(f"--- Librarian matched playbook: {librarian_result.get('playbook_id')} ---")
+                response_message = response.choices[0].message
+                content = response_message.content or ""
+                tool_calls = response_message.tool_calls
 
-                    # Emit widget event
-                    yield {"data": json.dumps({"type": "widget", "data": librarian_result})}
+                if not tool_calls:
+                    if content:
+                        yield {"data": json.dumps({"type": "assistant", "content": content})}
+                        full_content += content
+                    break
 
-                    # Save widget to DB
-                    widget_result = {
-                        "type": "widget",
-                        "widgets": [librarian_result],
-                        "playbook_id": librarian_result["playbook_id"],
-                        "initial_inputs": librarian_result.get("initial_inputs", {}),
-                        "rationale": librarian_result.get("rationale", ""),
-                        "risk_level": librarian_result.get("risk_level", "low"),
-                        "reply": full_content,
-                        "conversation_id": conversation_id
-                    }
-                    with next(database.get_session()) as save_db:
-                        assistant_msg = models.Message(
-                            conversation_id=conversation_id,
-                            role="assistant",
-                            content=json.dumps(widget_result),
-                            type="widget"
-                        )
-                        save_db.add(assistant_msg)
-                        save_db.commit()
-                else:
-                    # No playbook matched, save text response to DB
-                    with next(database.get_session()) as save_db:
-                        assistant_msg = models.Message(
-                            conversation_id=conversation_id,
-                            role="assistant",
-                            content=full_content,
-                            type="text"
-                        )
-                        save_db.add(assistant_msg)
-                        save_db.commit()
-            else:
-                # Empty response, save anyway
-                with next(database.get_session()) as save_db:
-                    assistant_msg = models.Message(
-                        conversation_id=conversation_id,
+                # Support for tool calls accumulation and history preservation
+                llm_messages.append({
+                    "role": "assistant",
+                    "content": response_message.content,
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments
+                            }
+                        } for tc in tool_calls
+                    ]
+                })
+
+                for tool_call in tool_calls:
+                    f_name = tool_call.function.name
+                    f_args = json.loads(tool_call.function.arguments)
+                    
+                    # 1. Save Tool Call to DB
+                    db_tool_call = models.Message(
+                        conversation_id=request.conversation_id,
                         role="assistant",
-                        content=content or "",
-                        type="text"
+                        type="status",
+                        content=json.dumps({
+                            "statusType": "tool_call",
+                            "toolName": f_name,
+                            "arguments": f_args
+                        })
                     )
-                    save_db.add(assistant_msg)
-                    save_db.commit()
+                    db.add(db_tool_call)
+                    db.commit()
 
-            yield {"data": json.dumps({"type": "done", "conversation_id": conversation_id})}
+                    yield {"data": json.dumps({
+                        "type": "status", 
+                        "statusType": "tool_call",
+                        "toolName": f_name,
+                        "arguments": f_args,
+                        "content": f"侦探调用：{f_name}"
+                    })}
+                    
+                    try:
+                        result = await mcp_session.call_tool(f_name, f_args)
+                        result_str = "\n".join([c.text for c in result.content if hasattr(c, 'text')])
+                        
+                        # 2. Save Tool Result to DB
+                        db_tool_result = models.Message(
+                            conversation_id=request.conversation_id,
+                            role="assistant",
+                            type="status",
+                            content=json.dumps({
+                                "statusType": "tool_result",
+                                "toolName": f_name,
+                                "result": result_str
+                            })
+                        )
+                        db.add(db_tool_result)
+                        db.commit()
+
+                        yield {"data": json.dumps({
+                            "type": "status",
+                            "statusType": "tool_result",
+                            "toolName": f_name,
+                            "result": result_str,
+                            "content": f"采集到 {f_name} 数据"
+                        })}
+                        
+                        llm_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": f_name,
+                            "content": result_str
+                        })
+                    except Exception as e:
+                        error_msg = f"Error calling {f_name}: {str(e)}"
+                        
+                        # 3. Save Error Result to DB
+                        db_err_result = models.Message(
+                            conversation_id=request.conversation_id,
+                            role="assistant",
+                            type="status",
+                            content=json.dumps({
+                                "statusType": "tool_result",
+                                "toolName": f_name,
+                                "result": error_msg,
+                                "is_error": True
+                            })
+                        )
+                        db.add(db_err_result)
+                        db.commit()
+
+                        llm_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": f_name,
+                            "content": error_msg
+                        })
+
+            # === PASS 2: Surgeon Agent (Remediation Design) ===
+            investigation_log = ""
+            for msg in llm_messages:
+                role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", "")
+                content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", "")
+                
+                if role == "tool":
+                    name = msg.get("name") if isinstance(msg, dict) else getattr(msg, "name", "")
+                    investigation_log += f"\n[Tool Result: {name}]\n{content[:500]}\n"
+                elif role == "assistant" and content:
+                    investigation_log += f"\n[Detective Analysis]: {content}\n"
+                elif role == "user":
+                    investigation_log += f"\n[User Request]: {content}\n"
+
+            prescription_raw = await run_surgeon_agent(request.message, investigation_log, write_tools)
+            if prescription_raw:
+                yield {"data": json.dumps({"type": "assistant", "content": prescription_raw})}
+                full_content += "\n\n" + prescription_raw
+
+            # Save Final Response
+            final_msg = models.Message(
+                conversation_id=request.conversation_id,
+                role="assistant",
+                content=full_content,
+                type="text"
+            )
+            db.add(final_msg)
+            db.commit()
+            
+            yield {"data": json.dumps({"type": "done", "conversation_id": request.conversation_id})}
 
         except Exception as e:
-            print(f"Error in chat stream: {e}")
-            yield {"data": json.dumps({"type": "error", "message": str(e)})}
+            print(f"Chat stream error: {e}")
+            yield {"data": json.dumps({"type": "error", "message": f"Error: {str(e)}"})}
 
     return EventSourceResponse(event_generator())
 
@@ -502,108 +472,82 @@ async def list_conversations(db: Session = Depends(get_session)):
 @app.get("/api/conversations/{conversation_id}")
 async def get_conversation_history(conversation_id: int, db: Session = Depends(get_session)):
     messages = db.exec(select(models.Message).where(models.Message.conversation_id == conversation_id).order_by(models.Message.created_at)).all()
+    return [{"role": m.role, "content": m.content, "type": m.type, "created_at": m.created_at} for m in messages]
+
+class RemediationExecuteRequest(BaseModel):
+    conversation_id: int
+    intent: str
+    tool_name: str
+    arguments: Dict[str, Any]
+    cluster_id: int
+    risk_level: str = "LOW"
+
+@app.post("/api/remediation/execute")
+async def execute_remediation(request: RemediationExecuteRequest, db: Session = Depends(get_session)):
+    mcp_session = await session_manager.get_mcp_session(request.cluster_id, db)
     
-    # Parse widget contents if necessary
-    parsed_messages = []
-    for m in messages:
-        content = m.content
-        if m.type == "widget":
-            try:
-                content = json.loads(m.content)
-            except:
-                pass
-        parsed_messages.append({
-            "role": m.role,
-            "content": content,
-            "type": m.type,
-            "created_at": m.created_at
+    print(f"--- Executing Remediation: tool={request.tool_name} ---")
+    
+    try:
+        result = await mcp_session.call_tool(request.tool_name, request.arguments)
+        output_text = "".join([item.text for item in result.content if hasattr(item, "text")])
+        is_error = result.isError if hasattr(result, "isError") else False
+        
+        # Save execution result to DB
+        exec_msg = models.Message(
+            conversation_id=request.conversation_id,
+            role="assistant",
+            type="remediation_result",
+            content=json.dumps({
+                "intent": request.intent,
+                "tool_name": request.tool_name,
+                "success": not is_error,
+                "output": output_text
+            })
+        )
+        db.add(exec_msg)
+        db.commit()
+
+        return {
+            "success": not is_error,
+            "output": output_text,
+            "tool": request.tool_name
+        }
+    except Exception as e:
+        print(f"Remediation Execution Error: {e}")
+        # Save error to DB
+        error_msg = models.Message(
+            conversation_id=request.conversation_id,
+            role="assistant",
+            type="remediation_result",
+            content=json.dumps({
+                "intent": request.intent,
+                "tool_name": request.tool_name,
+                "success": False,
+                "output": str(e)
+            })
+        )
+        db.add(error_msg)
+        db.commit()
+
+@app.post("/api/remediation/dismiss")
+async def dismiss_remediation(request: RemediationExecuteRequest, db: Session = Depends(get_session)):
+    # Save dismissal to DB
+    dismiss_msg = models.Message(
+        conversation_id=request.conversation_id,
+        role="assistant",
+        type="remediation_result",
+        content=json.dumps({
+            "intent": request.intent,
+            "tool_name": request.tool_name,
+            "success": False,
+            "dismissed": True,
+            "output": "方案已被用户拒绝"
         })
-    return parsed_messages
-
-# Playbook Endpoints (Legacy or just kept for compatibility)
-@app.get("/api/playbooks")
-async def get_playbooks():
-    print("GET /playbooks requested")
-    if not playbook_engine:
-        print("Error: playbook_engine not initialized")
-        raise HTTPException(status_code=503, detail="Playbook engine not ready")
-    pbs = playbook_engine.list_playbooks()
-    # Merge with registry-based playbooks
-    registry_pbs = registry.list_playbooks()
-    
-    print(f"Found {len(pbs)} YAML playbooks and {len(registry_pbs)} modular playbooks")
-    return pbs + registry_pbs
-
-@app.post("/api/playbooks/{playbook_id}/run")
-async def run_playbook(playbook_id: str, user_inputs: dict):
-    print(f"POST /playbooks/{playbook_id}/run requested with inputs: {user_inputs}")
-    if not playbook_engine:
-        print("Error: playbook_engine not initialized")
-        raise HTTPException(status_code=503, detail="Playbook engine not ready")
-    
-    async def event_generator():
-        print(f"Starting execution of playbook: {playbook_id}")
-        async for event in playbook_engine.execute_playbook(playbook_id, user_inputs):
-            yield {"data": json.dumps(event)}
-        print(f"Finished execution of playbook: {playbook_id}")
-
-    return EventSourceResponse(event_generator())
-
-@app.post("/api/playbooks/execute")
-async def execute_playbook_v2(request: PlaybookExecuteRequest):
-    """
-    Modular Playbook Execution API with SSE.
-    Supports both new modular playbooks and legacy YAML playbooks.
-    """
-    # 1. Try finding in modular registry first
-    playbook = registry.get_playbook(request.playbook_id)
-    
-    if playbook:
-        # Validate inputs early
-        try:
-            playbook["metadata"].args_model.model_validate(request.params)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid parameters: {str(e)}")
-
-        async def modular_generator():
-            async for event in registry.execute_streaming(request.playbook_id, request.params):
-                yield {
-                    "event": event.get("event", "message"),
-                    "data": json.dumps(event.get("data", ""))
-                }
-        return EventSourceResponse(modular_generator())
-
-    # 2. Try finding in legacy YAML engine
-    if playbook_engine:
-        # Check if the YAML file exists
-        yaml_path = os.path.join(PLAYBOOKS_DIR, f"{request.playbook_id}.yaml")
-        if os.path.exists(yaml_path):
-            async def legacy_generator():
-                async for chunk in playbook_engine.execute_playbook(request.playbook_id, request.params):
-                    # Translate legacy types to SSE events
-                    msg_type = chunk.get("type", "info")
-                    if msg_type == "report":
-                        # Standardize YAML report to PlaybookResponse structure
-                        result = {
-                            "success": True,
-                            "message": "执行完成",
-                            "report": chunk.get("content", ""),
-                            "data": {}
-                        }
-                        yield {"event": "result", "data": json.dumps(result)}
-                    elif msg_type == "error":
-                        yield {"event": "error", "data": json.dumps(chunk.get("message", "Unknown error"))}
-                    elif msg_type == "info":
-                        yield {"event": "log", "data": json.dumps(chunk.get("message", ""))}
-                    elif msg_type == "step_start":
-                        yield {"event": "status", "data": json.dumps(f"Step: {chunk.get('name', 'Executing...')}")}
-                    else:
-                        # Fallback for other types like step_finish
-                        yield {"event": "log", "data": json.dumps(str(chunk))}
-            
-            return EventSourceResponse(legacy_generator())
-
-    raise HTTPException(status_code=404, detail=f"Playbook {request.playbook_id} not found in registry or YAML engine")
+    )
+    db.add(dismiss_msg)
+    db.commit()
+    return {"success": True}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
