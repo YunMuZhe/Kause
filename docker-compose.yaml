@@ -1,6 +1,7 @@
 version: '3.8'
 
 services:
+  # 1. Database (MySQL)
   mysql:
     image: mysql:8.0
     container_name: kause_mysql
@@ -8,11 +9,61 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: kause_secret
       MYSQL_DATABASE: kause
-    ports:
-      - "3306:3306"
     volumes:
       - ./mysql_data:/var/lib/mysql
+    networks:
+      - kause-net
+    healthcheck:
+      test: ["CMD", "mysqladmin" ,"ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+  # 2. Frontend (React + Nginx Proxy)
+  frontend:
+    build: 
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"  # Map host 5173 to container 80 (Nginx)
+    depends_on:
+      - backend
+    networks:
+      - kause-net
+
+  # 3. Backend (FastAPI "The Brain")
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - ./backend/.env
+    environment:
+      - MCP_SERVER_COMMAND=/usr/local/bin/mcp-server
+      - APP_DB__HOST=mysql
+      - APP_DB__PASSWORD=kause_secret
+    volumes:
+      - mcp-bin:/usr/local/bin
+      - ~/.kube:/root/.kube:ro # Mount host kubeconfig
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mcp-server-provider:
+        condition: service_completed_successfully
+    networks:
+      - kause-net
+
+  # 4. MCP Server Provider (Binary Builder)
+  mcp-server-provider:
+    build:
+      context: ./mcp-server
+      dockerfile: Dockerfile
+    command: ["cp", "/app/mcp-server", "/shared/mcp-server"]
+    volumes:
+      - mcp-bin:/shared
 
 networks:
-  default:
-    name: kause_network
+  kause-net:
+    driver: bridge
+
+volumes:
+  mcp-bin:
