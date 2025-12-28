@@ -105,7 +105,7 @@ cp backend/.env.example backend/.env
 
 ### 3. 启动 (使用 Docker Compose)
 ```bash
-docker-compose -f docker-compose.prod.yaml up --build
+docker-compose up --build
 ```
 (注意：此命令会自动构建前端、后端及 MCP Server)
 
