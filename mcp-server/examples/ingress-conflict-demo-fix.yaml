@@ -1,0 +1,138 @@
+# ===========================
+# 1. 模拟旧服务 (Old Service)
+# ===========================
+apiVersion: v1
+kind: Service
+metadata:
+  name: old-service
+  namespace: default
+spec:
+  ports:
+  - port: 80
+    targetPort: 80
+  selector:
+    app: old-app
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: old-app
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: old-app
+  template:
+    metadata:
+      labels:
+        app: old-app
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        # 【修复点】创建 /api/payment 文件，这样无论流量怎么飘，只要打到这里都能返回 200
+        command: 
+        - "/bin/sh"
+        - "-c"
+        - |
+          mkdir -p /usr/share/nginx/html/api
+          echo 'I am the OLD LEGACY app' > /usr/share/nginx/html/api/payment
+          # 同时也创建一个根目录的，以防万一
+          echo 'I am the OLD LEGACY app' > /usr/share/nginx/html/index.html
+          nginx -g 'daemon off;'
+
+---
+# ===========================
+# 2. 模拟新服务 (New Target)
+# ===========================
+apiVersion: v1
+kind: Service
+metadata:
+  name: new-service
+  namespace: default
+spec:
+  ports:
+  - port: 80
+    targetPort: 80
+  selector:
+    app: new-app
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: new-app
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: new-app
+  template:
+    metadata:
+      labels:
+        app: new-app
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        # 【修复点】同上，创建对应的路径文件
+        command: 
+        - "/bin/sh"
+        - "-c"
+        - |
+          mkdir -p /usr/share/nginx/html/api
+          echo 'I am the NEW PAYMENT app' > /usr/share/nginx/html/api/payment
+          echo 'I am the NEW PAYMENT app' > /usr/share/nginx/html/index.html
+          nginx -g 'daemon off;'
+
+---
+# ===========================
+# 3. Ingress 规则冲突陷阱 (保持不变)
+# ===========================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-legacy-wildcard
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: demo.local
+    http:
+      paths:
+      # 陷阱：正则优先
+      - path: /api/.*
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: old-service
+            port:
+              number: 80
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-new-payment
+  namespace: default
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: demo.local
+    http:
+      paths:
+      # 目标
+      - path: /api/payment
+        pathType: Prefix
+        backend:
+          service:
+            name: new-service
+            port:
+              number: 80

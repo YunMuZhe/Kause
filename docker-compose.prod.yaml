@@ -1,0 +1,61 @@
+version: '3.8'
+
+services:
+  # 1. Frontend (React + Nginx Proxy)
+  frontend:
+    build: 
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"  # Map host 5173 to container 80 (Nginx)
+    depends_on:
+      - backend
+    networks:
+      - kause-net
+
+  # 2. Backend (FastAPI "The Brain")
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - ./backend/.env
+    environment:
+      - MCP_SERVER_COMMAND=/usr/local/bin/mcp-server # In docker, we might run it differently or as sidecar
+      # Actually, for Docker architecture, the Backend usually talks to MCP via Stdio OR TCP. 
+      # Since MCP over Stdio is standard but hard between containers, we have two options:
+      # Option A: Run MCP as a subprocess inside Backend container (Needs Go installed there? No, binary copy)
+      # Option B: Run MCP as a separate service and use MCP-over-SSE/HTTP (If supported).
+      # 
+      # Simplest for this architecture (Stdio): 
+      # We will rely on the backend to execute the binary. 
+      # SO: We need to copy the MCP binary INTO the backend container or use a volume.
+      # Let's use a volume shared from the mcp-builder or just COPY it in a multi-stage Dockerfile for Backend.
+      #
+      # Correction: For simplicity in THIS compose, let's assume we copy the binary into backend.
+      # BUT, to keep it clean, let's use a shared volume where the mcp-server container deposits the binary.
+    volumes:
+      - mcp-bin:/usr/local/bin
+      - ~/.kube:/root/.kube:ro # Mount host kubeconfig
+      - ./mysql_data:/app/mysql_data
+    depends_on:
+      - mcp-server-provider
+    networks:
+      - kause-net
+
+  # 3. MCP Server Provider (Just to build/provide the binary)
+  # This is a trick to get the binary into the backend container without bloating the backend build
+  mcp-server-provider:
+    build:
+      context: ./mcp-server
+      dockerfile: Dockerfile
+    command: ["cp", "/app/mcp-server", "/shared/mcp-server"]
+    volumes:
+      - mcp-bin:/shared
+
+networks:
+  kause-net:
+    driver: bridge
+
+volumes:
+  mcp-bin:

@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+  namespace: default
+  labels:
+    app: payment
+    env: production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payment
+  template:
+    metadata:
+      labels:
+        app: payment
+    spec:
+      containers:
+      - name: server
+        image: nginx:alpine
+        # 模拟一个有问题的应用：虽然活着，但我们假装它内存爆了
+        resources:
+          limits:
+            memory: "128Mi"
+            cpu: "500m"
+        ports:
+        - containerPort: 80
+---
+# 创建一个 Service，让它看起来像正经业务
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-entrypoint
+spec:
+  selector:
+    app: payment
+  ports:
+  - port: 80
+    targetPort: 80

@@ -1,0 +1,131 @@
+# ===========================
+# 1. 模拟旧服务 (Old Service)
+# ===========================
+apiVersion: v1
+kind: Service
+metadata:
+  name: old-service
+  namespace: default
+spec:
+  ports:
+  - port: 80
+    targetPort: 8080
+  selector:
+    app: old-app
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: old-app
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: old-app
+  template:
+    metadata:
+      labels:
+        app: old-app
+    spec:
+      containers:
+      - name: echo
+        image: k8s.gcr.io/echoserver:1.4
+        ports:
+        - containerPort: 8080
+        env:
+        - name: NODE_NAME
+          value: "I am the OLD LEGACY app"
+
+---
+# ===========================
+# 2. 模拟新服务 (New Target)
+# ===========================
+apiVersion: v1
+kind: Service
+metadata:
+  name: new-service
+  namespace: default
+spec:
+  ports:
+  - port: 80
+    targetPort: 8080
+  selector:
+    app: new-app
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: new-app
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: new-app
+  template:
+    metadata:
+      labels:
+        app: new-app
+    spec:
+      containers:
+      - name: echo
+        image: k8s.gcr.io/echoserver:1.4
+        ports:
+        - containerPort: 8080
+        env:
+        - name: NODE_NAME
+          value: "I am the NEW PAYMENT app"
+
+---
+# ===========================
+# 3. Ingress 规则冲突陷阱
+# ===========================
+
+# 陷阱规则：这是一个旧的 Ingress，它使用了正则匹配
+# 它的优先级在 Nginx 中通常很高
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-legacy-wildcard
+  namespace: default
+  annotations:
+    # 开启正则匹配
+    nginx.ingress.kubernetes.io/use-regex: "true"
+spec:
+  ingressClassName: nginx # 假设你使用的是 nginx-ingress
+  rules:
+  - host: demo.local
+    http:
+      paths:
+      # 这个正则非常贪婪，匹配 /api 后面的一切
+      - path: /api/.*
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: old-service
+            port:
+              number: 80
+
+---
+# 你的目标规则：你以为写得更长、更具体就能生效
+# 但实际上它会被上面的正则“吃掉”
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-new-payment
+  namespace: default
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: demo.local
+    http:
+      paths:
+      # 标准的前缀匹配
+      - path: /api/payment
+        pathType: Prefix
+        backend:
+          service:
+            name: new-service
+            port:
+              number: 80
