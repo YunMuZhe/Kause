@@ -33,14 +33,14 @@ Kause 不会让您粘贴日志，而是 **主动去查看**。
 - **上下文感知**：理解服务依赖关系和集群拓扑。
 - **根因分析**：将事件（如 "OOMKilled"）与日志（"Out of memory error"）关联起来，告诉您 *为什么* 发生，而不仅仅是 *发生了什么*。
 
-![AI 侦探演示](static/demo-detective.png)
+![AI 侦探演示](static/example1/demo-detective.png)
 
 #### 🩺 自动外科医生 (精准修复)
 一旦发现问题，Kause 不会只说“修复它”，它会 **为您编写修复方案**。
 - **生成 JSON Patch**：生成精准的、符合 RFC 6902 标准的 JSON Patch 来对外科手术般地修改资源。
 - **校验**：在提出补丁之前确保其语法正确。
 
-![自动外科医生演示](static/demo-prescription.png)
+![自动外科医生演示](static/example1/demo-prescription.png)
 
 #### 🛡️ 人在回路 (Human-in-the-Loop)
 我们相信 **AI 是辅助，而非主宰**。
@@ -48,13 +48,32 @@ Kause 不会让您粘贴日志，而是 **主动去查看**。
 - **严格审批**：没有您的明确确认，不会应用任何补丁。
 - **审计日志**：记录每一次操作。
 
-![安全预览演示](static/demo-safety-preview.png)
+![安全预览演示](static/example1/demo-safety-preview.png)
 
 #### ✅ 操作完成
 修复应用后，Kause 会自动验证集群状态。
 
-![成功演示1](static/success.png)
-![成功演示2](static/success-pod-yaml.png)
+![成功演示1](static/example1/success.png)
+![成功演示2](static/example1/success-pod-yaml.png)
+
+### 故障场景2: Ingress 流量黑洞（路径匹配失误）
+
+**故事背景**：
+您正在将 `/api/payment` 流量迁移到新的微服务。
+
+**配置失误**：
+在新 Ingress 中配置规则时，您不小心拼错了路径（例如写成了 plural 复数形式）或忘记了 `/api` 前缀，导致**精确匹配失效**。
+
+**后果**：
+由于精确匹配未命中，流量没有进入新服务，而是被旧服务的“贪婪正则”（如 `/api/.*`）捕获，导致流量“消失”或进入了错误的服务版本，造成业务看似中断。
+
+**故障模拟 YAML**: [ingress-hijack-final.yaml](mcp-server/examples/ingress-hijack-final.yaml)
+
+**Kause 现场分析**：
+![错误流量](static/example2/demo-detective.png)
+![检验结果](static/example2/demo-prescription.png)
+![执行成功](static/example2/success1.png)
+![正确流量](static/example2/success2.png)
 
 ---
 

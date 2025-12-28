@@ -33,14 +33,14 @@ Instead of asking you to paste logs, Kause **goes and looks for itself**.
 - **Context-Aware**: Understands service dependencies and cluster topology.
 - **Root Cause Analysis**: Correlates events (e.g., "OOMKilled") with logs ("Out of memory error") to tell you *why*, not just *what*.
 
-![AI Detective Demo](static/demo-detective.png)
+![AI Detective Demo](static/example1/demo-detective.png)
 
 #### 🩺 Auto-Surgeon (Precisely Fix It)
 Once the problem is found, Kause doesn't just say "fix it"; it **writes the fix for you**.
 - **JSON Patch Generation**: Generates precise, RFC 6902 compliant JSON Patches to modify resources surgically.
 - **Validation**: Ensures patches are syntactically correct before proposing them.
 
-![Auto Surgeon Demo](static/demo-prescription.png)
+![Auto Surgeon Demo](static/example1/demo-prescription.png)
 
 #### 🛡️ Human-in-the-Loop (Safety First)
 We believe in **AI assistance, not AI dominance**.
@@ -48,13 +48,32 @@ We believe in **AI assistance, not AI dominance**.
 - **Strict Approval**: No patch is applied without your explicit confirmation.
 - **Audit Logs**: Every action is recorded.
 
-![Safety Preview Demo](static/demo-safety-preview.png)
+![Safety Preview Demo](static/example1/demo-safety-preview.png)
 
 #### ✅ Operation Complete
 The fix is applied, and Kause verifies the cluster state.
 
-![Success Demo1](static/success.png)
-![Success Demo2](static/success-pod-yaml.png)
+![Success Demo1](static/example1/success.png)
+![Success Demo2](static/example1/success-pod-yaml.png)
+
+### Scenario 2: Ingress Hijacking (Path Matching Error)
+
+**Story**:
+You are migrating `/api/payment` traffic to a new microservice.
+
+**Misconfiguration**:
+When configuring the new Ingress rules, you typo the path (e.g., using plural `payments` instead of `payment`) or forget the `/api` prefix, causing **exact match failure**.
+
+**Consequence**:
+Because the specific rule doesn't match, traffic falls through to the legacy service's "greedy regex" (e.g., `/api/.*`). The requests are "hijacked" by the old service, causing silent failures or version mismatches.
+
+**Simulation YAML**: [ingress-hijack-final.yaml](mcp-server/examples/ingress-hijack-final.yaml)
+
+**Kause Investigation**:
+![Detective View](static/example2/demo-detective.png)
+![Prescription View](static/example2/demo-prescription.png)
+![Execution Success](static/example2/success1.png)
+![Traffic Verification](static/example2/success2.png)
 
 ---
 
