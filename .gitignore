@@ -89,8 +89,7 @@ config.local.yaml
 .hypothesis/
 
 # Application specific
-static/
- backend_test.log
- backend_refactor_test.log
- backend_unified_test.log
- backend_final.log
+backend_test.log
+backend_refactor_test.log
+backend_unified_test.log
+backend_final.log
