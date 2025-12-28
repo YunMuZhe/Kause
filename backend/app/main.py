@@ -162,40 +162,47 @@ async def run_surgeon_agent(user_message: str, investigation_log: str, write_too
         print("--- Surgeon: No write tools available ---")
         return None
 
-    surgeon_prompt = f"""你是一个 K8s 资深专家组件（外科医生模式）。你的任务是根据“侦探”给出的调查结论，设计并返回一个【结构化治疗方案 (Prescription)】。
+    surgeon_template = """你是一个 K8s 资深专家组件（外科医生模式）。你的任务是根据“侦探”给出的调查结论，设计并返回一个【结构化治疗方案 (Prescription)】。
 
 ## 用户请求
-{user_message}
+{USER_MESSAGE}
 
 ## 侦探的调查结论与工具输出
-{investigation_log}
+{INVESTIGATION_LOG}
 
 ## 你可以使用的【写操作】工具库 (Remediation Tools)
-{json.dumps(write_tools, indent=2)}
+{WRITE_TOOLS}
 
 ## 核心规则
 1. **必须返回卡片**：如果侦探发现了明确的问题（如副本数不一致、Pod 异常、资源不足、配置错误），你必须选择一个合适的【写操作】工具。
-2. **工具选择建议**：
-   - 如果 Pod 镜像更新后崩溃 -> 尝试 `rollback_deployment`。
-   - 如果只是某个 Pod 挂了但 Deployment 没问题 -> 尝试 `delete_pod` 让它自动重建。
-   - 如果修改了 ConfigMap 或 Secret 需要生效 -> 尝试 `restart_deployment` 进行滚动重启。
-   - 如果负载过高 -> 尝试 `scale_deployment` 扩容。
-3. **严禁纯文本建议**：不要只说“你应该执行...”，必须输出下面定义的 <prescription> 标签。
-4. **参数一致性**：确保参数（Namespace, Name, Replicas等）与侦探调查出的结果完全一致。
+2. **优先使用 `patch_resource` (Auto-Fixer)**：
+   - 如果发现 YAML 配置错误（如镜像版本错误、Liveness/Readiness 探针配置不当、资源限制错误、环境变量缺失等）。
+   - 你必须生成一个符合 **RFC 6902** 规范的 JSON Patch 列表。
+   - 示例：`[{"op": "replace", "path": "/spec/template/spec/containers/0/image", "value": "nginx:1.14.2"}]`。
+3. **工具选择建议**：
+   - 如果是配置问题 -> `patch_resource`。
+   - 如果 Pod 镜像更新后崩溃 -> `rollback_deployment`。
+   - 如果修改了 ConfigMap 或 Secret 需要生效 -> `restart_deployment` 进行滚动重启。
+   - 如果负载过高 -> `scale_deployment` 扩容。
+   - 如果只是某个 Pod 挂了但 Deployment 没问题 -> `delete_pod` 让它自动重建。
+4. **参数一致性**：确保参数（Namespace, Name, Kind, Patch等）与侦探调查出的结果完全一致。
+5. **严禁纯文本建议**：必须输出下面定义的 <prescription> 标签。
 
 ## 输出格式 (必须包含此标签)
 必须返回且仅返回一个符合以下结构的 <prescription> 标签：
 <prescription>
-{{
-  "intent": "操作的简短描述 (例如：回滚 payment-service 到上个版本)",
-  "reasoning": "结合调查结果解释为什么执行此操作 (例如：侦探报告显示新镜像启动失败，回滚可快速恢复业务)",
-  "tool_name": "具体要调用的 MCP 工具名称",
-  "arguments": {{ ... 具体的参数，如 namespace, name 等 ... }},
+{
+  "intent": "操作的简短描述 (例如：修正 payment-service 的镜像版本)",
+  "reasoning": "结合调查结果解释为什么执行此操作 (例如：检测到镜像标签错误，通过 Patch 将其修正为 1.14.2)",
+  "tool_name": "patch_resource (推荐) 或其他工具名称",
+  "arguments": { ... 具体的参数 ... },
   "risk_level": "LOW|MEDIUM|HIGH"
-}}
+}
 </prescription>
-
 如果你认为没有任何工具可以解决问题，或者不需要任何操作，请回复“暂无建议方案”。"""
+    surgeon_prompt = surgeon_template.replace("{USER_MESSAGE}", user_message) \
+                                     .replace("{INVESTIGATION_LOG}", investigation_log) \
+                                     .replace("{WRITE_TOOLS}", json.dumps(write_tools, indent=2))
 
     try:
         print(f"--- Surgeon Agent: Generating prescription ---")
@@ -472,7 +479,7 @@ async def list_conversations(db: Session = Depends(get_session)):
 @app.get("/api/conversations/{conversation_id}")
 async def get_conversation_history(conversation_id: int, db: Session = Depends(get_session)):
     messages = db.exec(select(models.Message).where(models.Message.conversation_id == conversation_id).order_by(models.Message.created_at)).all()
-    return [{"role": m.role, "content": m.content, "type": m.type, "created_at": m.created_at} for m in messages]
+    return [{"id": m.id, "role": m.role, "content": m.content, "type": m.type, "cluster_id": m.cluster_id, "created_at": m.created_at} for m in messages]
 
 class RemediationExecuteRequest(BaseModel):
     conversation_id: int
@@ -489,9 +496,15 @@ async def execute_remediation(request: RemediationExecuteRequest, db: Session = 
     print(f"--- Executing Remediation: tool={request.tool_name} ---")
     
     try:
-        result = await mcp_session.call_tool(request.tool_name, request.arguments)
+        # Pre-process arguments: patch_resource expects 'patch' as a JSON string
+        tool_args = request.arguments.copy()
+        if request.tool_name == "patch_resource" and "patch" in tool_args:
+            if not isinstance(tool_args["patch"], str):
+                tool_args["patch"] = json.dumps(tool_args["patch"])
+
+        result = await mcp_session.call_tool(request.tool_name, tool_args)
         output_text = "".join([item.text for item in result.content if hasattr(item, "text")])
-        is_error = result.isError if hasattr(result, "isError") else False
+        is_error = getattr(result, "isError", False)
         
         # Save execution result to DB
         exec_msg = models.Message(
@@ -529,6 +542,12 @@ async def execute_remediation(request: RemediationExecuteRequest, db: Session = 
         )
         db.add(error_msg)
         db.commit()
+
+        return {
+            "success": False,
+            "error": str(e),
+            "tool": request.tool_name
+        }
 
 @app.post("/api/remediation/dismiss")
 async def dismiss_remediation(request: RemediationExecuteRequest, db: Session = Depends(get_session)):

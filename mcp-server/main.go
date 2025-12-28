@@ -114,6 +114,14 @@ func main() {
 		mcp.WithNumber("revision", mcp.Description("The revision to rollback to (default 0 for the previous revision)")),
 	), rollbackDeploymentHandler(clientset))
 
+	s.AddTool(mcp.NewTool("patch_resource",
+		mcp.WithDescription("Apply a JSON Patch (RFC 6902) to a Kubernetes resource"),
+		mcp.WithString("namespace", mcp.Required(), mcp.Description("The namespace of the resource")),
+		mcp.WithString("kind", mcp.Required(), mcp.Description("The kind of resource (Pod, Deployment, Service, etc.)")),
+		mcp.WithString("name", mcp.Required(), mcp.Description("The name of the resource")),
+		mcp.WithString("patch", mcp.Required(), mcp.Description("The JSON Patch string (e.g. [{\"op\": \"replace\", \"path\": \"/spec/replicas\", \"value\": 3}])")),
+	), patchResourceHandler(clientset))
+
 	// Run the server using stdio
 	if err := server.ServeStdio(s); err != nil {
 		fmt.Fprintf(os.Stderr, "Error serving mcp: %v\n", err)
@@ -535,5 +543,56 @@ func listNamespacesHandler(clientset *kubernetes.Clientset) func(ctx context.Con
 
 		resultJSON, _ := json.MarshalIndent(nsList, "", "  ")
 		return mcp.NewToolResultText(string(resultJSON)), nil
+	}
+}
+
+func patchResourceHandler(clientset *kubernetes.Clientset) func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		namespace, _ := request.RequireString("namespace")
+		kind, _ := request.RequireString("kind")
+		name, _ := request.RequireString("name")
+		patch := ""
+		if args, ok := request.Params.Arguments.(map[string]interface{}); ok {
+			if val, ok := args["patch"]; ok {
+				switch v := val.(type) {
+				case string:
+					patch = v
+				default:
+					// If it's not a string (e.g. a structured list), marshal it back to JSON string
+					b, err := json.Marshal(v)
+					if err == nil {
+						patch = string(b)
+					}
+				}
+			}
+		}
+
+		if patch == "" {
+			return mcp.NewToolResultError("patch parameter is required and must be a valid JSON Patch string or array"), nil
+		}
+
+		var err error
+		var result interface{}
+		patchBytes := []byte(patch)
+
+		switch kind {
+		case "Pod":
+			result, err = clientset.CoreV1().Pods(namespace).Patch(ctx, name, types.JSONPatchType, patchBytes, metav1.PatchOptions{})
+		case "Deployment":
+			result, err = clientset.AppsV1().Deployments(namespace).Patch(ctx, name, types.JSONPatchType, patchBytes, metav1.PatchOptions{})
+		case "Service":
+			result, err = clientset.CoreV1().Services(namespace).Patch(ctx, name, types.JSONPatchType, patchBytes, metav1.PatchOptions{})
+		case "Ingress":
+			result, err = clientset.NetworkingV1().Ingresses(namespace).Patch(ctx, name, types.JSONPatchType, patchBytes, metav1.PatchOptions{})
+		default:
+			return mcp.NewToolResultError(fmt.Sprintf("Unsupported resource kind for patching: %s", kind)), nil
+		}
+
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to patch resource: %v", err)), nil
+		}
+
+		resultJSON, _ := json.MarshalIndent(result, "", "  ")
+		return mcp.NewToolResultText(fmt.Sprintf("Successfully patched %s/%s in namespace %s. New state:\n%s", kind, name, namespace, string(resultJSON))), nil
 	}
 }

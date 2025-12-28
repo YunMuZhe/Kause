@@ -11,6 +11,7 @@ import ClusterSelector from './components/ClusterSelector';
 import ClusterManagement from './components/ClusterManagement';
 
 interface Message {
+  id?: number;
   role: 'user' | 'assistant' | 'system';
   content: string;
   type?: 'text' | 'widget' | 'status' | 'remediation_result';
@@ -162,7 +163,7 @@ const App: React.FC = () => {
           const content = typeof m.content === 'string' ? JSON.parse(m.content) : m.content;
 
           if (content.reply) {
-            formattedMessages.push({ role: m.role as any, content: content.reply, type: 'text' });
+            formattedMessages.push({ id: m.id, role: m.role as any, content: content.reply, type: 'text' });
           }
 
           const widgets = content.widgets || [{
@@ -172,6 +173,7 @@ const App: React.FC = () => {
 
           widgets.forEach((w: any) => {
             formattedMessages.push({
+              id: m.id, // Share ID for widgets from same message? Or maybe generated? Using m.id is better than nothing, but duplicates might exist if multiple widgets.
               role: m.role as any,
               content: '',
               type: 'widget',
@@ -181,7 +183,7 @@ const App: React.FC = () => {
               args: w.args || w.initial_inputs || {},
               rationale: w.rationale || content.rationale,
               riskLevel: w.risk_level || content.risk_level,
-              clusterId: m.cluster_id // Preserve cluster context
+              clusterId: m.cluster_id
             });
           });
         } else if (m.type === 'status') {
@@ -201,6 +203,7 @@ const App: React.FC = () => {
           } catch (e) {
             // Fallback for legacy status messages
             formattedMessages.push({
+              id: m.id,
               role: m.role as any,
               content: m.content,
               type: 'status',
@@ -210,14 +213,26 @@ const App: React.FC = () => {
         } else if (m.type === 'remediation_result') {
           try {
             const execContent = typeof m.content === 'string' ? JSON.parse(m.content) : m.content;
-            // Find the most recent matching prescription to update its status
+            const targetIntent = execContent.intent;
+
+            // Find the matching prescription to update its status
             for (let j = formattedMessages.length - 1; j >= 0; j--) {
               const prev = formattedMessages[j];
               if (prev.role === 'assistant' && prev.content && prev.content.includes('<prescription>')) {
-                // We'll trust the order for now, or we could parse and check intent
-                prev.initialStatus = execContent.dismissed ? 'dismissed' : (execContent.success ? 'success' : 'error');
-                prev.initialResult = execContent.output;
-                break;
+                // Parse the intent from the prescription to verify a match
+                try {
+                  const match = prev.content.match(/<prescription>([\s\S]*?)<\/prescription>/);
+                  if (match) {
+                    const prescription = JSON.parse(match[1]);
+                    if (prescription.intent === targetIntent) {
+                      prev.initialStatus = execContent.dismissed ? 'dismissed' : (execContent.success ? 'success' : 'error');
+                      prev.initialResult = execContent.output;
+                      break;
+                    }
+                  }
+                } catch (pe) {
+                  // If parsing fails for one, continue to the next
+                }
               }
             }
           } catch (e) {
@@ -225,6 +240,7 @@ const App: React.FC = () => {
           }
         } else {
           formattedMessages.push({
+            id: m.id,
             role: m.role as any,
             content: m.content,
             type: 'text',
@@ -342,17 +358,16 @@ const App: React.FC = () => {
                 case 'assistant':
                   assistantContent += data.content;
                   setMessages(prev => {
-                    const filtered = prev.filter(m => m.type !== 'status');
-                    const lastMsg = filtered[filtered.length - 1];
+                    const lastMsg = prev[prev.length - 1];
 
                     if (lastMsg && lastMsg.role === 'assistant' && lastMsg.type === 'text') {
                       return [
-                        ...filtered.slice(0, -1),
+                        ...prev.slice(0, -1),
                         { ...lastMsg, content: assistantContent }
                       ];
                     } else {
                       return [
-                        ...filtered,
+                        ...prev,
                         { role: 'assistant', content: assistantContent, type: 'text' }
                       ];
                     }
@@ -364,7 +379,7 @@ const App: React.FC = () => {
                     setCurrentConversationId(data.conversation_id);
                     setHistoryTrigger(prev => prev + 1);
                   }
-                  setMessages(prev => prev.filter(m => m.type !== 'status'));
+                  // Do NOT filter out status messages here, otherwise thinking block disappears
                   break;
 
                 case 'error':
@@ -445,7 +460,17 @@ const App: React.FC = () => {
               for (let i = 0; i < messages.length; i++) {
                 const m = messages[i];
                 if (m.type === 'status') {
-                  pendingThinking.push(m);
+                  // Try to parse if it's a JSON string
+                  let parsed = m;
+                  if (typeof m.content === 'string' && m.content.startsWith('{')) {
+                    try {
+                      const data = JSON.parse(m.content);
+                      parsed = { ...m, ...data };
+                    } catch (e) {
+                      // Keep as is
+                    }
+                  }
+                  pendingThinking.push(parsed);
                 } else if (m.role === 'assistant') {
                   // Merge any pending thinking into this assistant message
                   consolidated.push({
@@ -500,7 +525,7 @@ const App: React.FC = () => {
 
                 return (
                   <div
-                    key={i}
+                    key={m.id || i}
                     className={`flex gap-4 sm:gap-6 ${m.role === 'user' ? 'flex-row-reverse' : 'flex-row'} animate-in fade-in slide-in-from-bottom-2 duration-300`}
                   >
                     {/* Avatar */}
@@ -534,7 +559,7 @@ const App: React.FC = () => {
                               <div className="absolute inset-0 bg-white/5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
                             )}
 
-                            <div className={`prose prose-invert prose-sm sm:prose-base max-w-full break-words overflow-x-auto scrollbar-thin scrollbar-thumb-white/10 ${m.role === 'user' ? 'prose-p:text-blue-50' : 'text-[#c9d1d9]'}`}>
+                            <div className={`prose prose-invert prose-sm sm:prose-base max-w-full break-words overflow-x-auto scrollbar-thin scrollbar-thumb-white/10 ${m.role === 'user' ? 'prose-p:text-blue-50 flex items-center min-h-[1.5rem]' : 'text-[#c9d1d9]'}`}>
                               <ReactMarkdown remarkPlugins={[remarkGfm]}>
                                 {displayContent}
                               </ReactMarkdown>
