@@ -1,0 +1,50 @@
+id: "deployment-health-check"
+version: "1.0"
+metadata:
+  title: "Deployment 深度分析"
+  summary: "一键探测副本状态、K8S 事件、容器日志，通过 AI 引擎给出根因分析与修复命令。"
+  description: "全方位检查 Deployment 的 Replicas、Events、Logs 并给出专家诊断建议"
+  icon: "shield-check"
+  tags: ["deployment", "troubleshooting", "expert"]
+
+inputs:
+  - key: "namespace"
+    label: "命名空间"
+    type: "string"
+    default: "default"
+  - key: "deployment_name"
+    label: "Deployment 名称"
+    type: "string"
+    placeholder: "nginx-deployment"
+
+steps:
+  - id: "fetch_deployment_data"
+    name: "获取集群实时数据"
+    type: "tool_call"
+    tool_name: "get_deployment_status"
+    args:
+      namespace: "{{ namespace }}"
+      deployment_name: "{{ deployment_name }}"
+    output_key: "k8s_status"
+
+  - id: "llm_diagnosis"
+    name: "AI 专家会诊"
+    type: "llm_analysis"
+    prompt_template: |
+      你是一个 K8S 运维专家。
+      请基于以下 Deployment 的实时数据，分析其健康状况：
+      
+      命名空间: {{ namespace }}
+      资源名称: {{ deployment_name }}
+      
+      数据细节:
+      {{ k8s_status | to_json }}
+      
+      你的任务：
+      1. 如果有 Pod 状态不正常，结合 Events 和 Logs 指出根本原因。
+      2. 给出具体的 `kubectl` 修复命令。
+      3. 对该 Deployment 的资源规格或配置给出优化建议。
+    output_key: "summary"
+
+output:
+  report_template: "{{ summary }}"

@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+openai
+mcp
+python-dotenv
+asyncio
+jinja2
+pyyaml
+sse-starlette
+sqlmodel
+pymysql
+cryptography

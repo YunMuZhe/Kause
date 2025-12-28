@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-image-error
+  namespace: default
+  labels:
+    app: test-fault
+    type: image-error
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx-image-error
+  template:
+    metadata:
+      labels:
+        app: nginx-image-error
+    spec:
+      containers:
+      - name: nginx
+        # 故障点 1: 这个版本号不存在，会导致 ImagePullBackOff
+        image: nginx:1.145.0-typomistake
+        ports:
+        - containerPort: 80
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: busybox-crash
+  namespace: default
+  labels:
+    app: test-fault
+    type: crash
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: busybox-crash
+  template:
+    metadata:
+      labels:
+        app: busybox-crash
+    spec:
+      containers:
+      - name: busybox
+        image: busybox
+        # 故障点 2: 错误的启动命令，会导致容器立刻退出，出现 CrashLoopBackOff
+        command: ["/bin/sh", "-c", "echo 'I am dying now'; exit 1"]

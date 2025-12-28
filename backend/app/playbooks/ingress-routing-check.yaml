@@ -1,0 +1,56 @@
+id: "ingress-routing-check"
+version: "1.0"
+metadata:
+  title: "Ingress 路由冲突诊断"
+  summary: "自动探测集群内所有的 Ingress、Service 以及端点，分析域名冲突与路径配置错误。"
+  description: "检查 Ingress 路径是否被正则表达式或其他规则劫持"
+  icon: "network-check" # 对应前端图标
+  tags: ["ingress", "network", "nginx"]
+
+# 1. 定义前端需要渲染的表单
+inputs:
+  - key: "namespace"
+    label: "命名空间"
+    type: "string"
+    default: "default"
+  - key: "target_path"
+    label: "访问路径 (URL Path)"
+    type: "string"
+    placeholder: "/api/payment"
+    description: "你期望访问的具体路径"
+
+# 2. 定义执行步骤
+steps:
+  # 步骤 A: 收集数据 (调用 Go MCP)
+  - id: "fetch_ingress_list"
+    name: "获取所有 Ingress 配置"
+    type: "tool_call"
+    tool_name: "get_ingresses" # 对应 MCP Server 里的工具名
+    args:
+      namespace: "{{ namespace }}" # 引用 inputs 变量
+    output_key: "all_ingresses" # 将结果存入上下文
+
+  # 步骤 B: 收集更多数据 (比如 Service IP，可选)
+  # ...
+
+  # 步骤 C: 核心分析 (调用 Python LLM)
+  - id: "analyze_conflict"
+    name: "AI 路由冲突分析"
+    type: "llm_analysis"
+    # 这里使用 Jinja2 风格模板，注入前面步骤获取的数据
+    prompt_template: |
+      你是一个 Nginx Ingress 专家。
+      用户想要访问的路径是: "{{ target_path }}"
+      
+      当前命名空间 "{{ namespace }}" 下的所有 Ingress 配置如下:
+      {{ all_ingresses | to_json }}
+      
+      请分析:
+      1. 哪个 Ingress 规则最可能匹配到该路径？
+      2. 是否存在“正则匹配 (Regex)”覆盖了“前缀匹配 (Prefix)”的情况？
+      3. 如果有冲突，请指出具体的 Ingress 名称和规则。
+    output_key: "final_report"
+
+# 3. 定义最终输出展示
+output:
+  report_template: "{{ final_report }}"
