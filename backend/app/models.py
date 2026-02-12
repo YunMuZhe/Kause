@@ -9,6 +9,15 @@ class Cluster(SQLModel, table=True):
     kubeconfig: str = Field(sa_column=Column(Text))
     description: Optional[str] = Field(default=None, sa_column=Column(Text))
 
+class Server(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(index=True, unique=True)
+    host: str
+    user: str
+    password: Optional[str] = Field(default=None)
+    key_path: Optional[str] = Field(default=None)
+    description: Optional[str] = Field(default=None, sa_column=Column(Text))
+
 class Conversation(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     title: str = Field(default="New Chat")

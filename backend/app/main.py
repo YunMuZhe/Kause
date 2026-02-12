@@ -1,4 +1,5 @@
 import os
+import sys
 import asyncio
 import json
 import tempfile
@@ -89,7 +90,64 @@ class ClusterSessionManager:
             await stack.aclose()
         self._sessions.clear()
 
+class SSHSessionManager:
+    def __init__(self):
+        self._session: Optional[Tuple[ClientSession, Any]] = None
+        self._lock = asyncio.Lock()
+
+    async def get_ssh_session(self, db: Session) -> ClientSession:
+        async with self._lock:
+            if self._session:
+                return self._session[0]
+            
+            # Load all servers from DB to pass to MCP via env
+            servers = db.exec(select(models.Server)).all()
+            server_list = []
+            for s in servers:
+                server_list.append({
+                    "name": s.name,
+                    "host": s.host,
+                    "user": s.user,
+                    "password": s.password, # In real world, decrypt this
+                    "key_path": s.key_path,
+                    "description": s.description
+                })
+            
+            try:
+                env = os.environ.copy()
+                env["SSH_SERVERS_JSON"] = json.dumps(server_list)
+                
+                # Path to the new SSH MCP server (absolute)
+                backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                ssh_server_path = os.path.join(os.path.dirname(backend_dir), "mcp-ssh-server", "main.py")
+                
+                server_params = StdioServerParameters(
+                    command=sys.executable,
+                    args=[ssh_server_path],
+                    env=env
+                )
+                
+                from contextlib import AsyncExitStack
+                stack = AsyncExitStack()
+                
+                print("Starting SSH MCP server...")
+                client_ctx = stdio_client(server_params)
+                read, write = await stack.enter_async_context(client_ctx)
+                session = await stack.enter_async_context(ClientSession(read, write))
+                await session.initialize()
+                
+                self._session = (session, stack)
+                return session
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to start SSH MCP server: {str(e)}")
+
+    async def close(self):
+        if self._session:
+            await self._session[1].aclose()
+            self._session = None
+
 session_manager = ClusterSessionManager()
+ssh_manager = SSHSessionManager()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -98,6 +156,7 @@ async def lifespan(app: FastAPI):
     yield
     # Cleanup
     await session_manager.close_all()
+    await ssh_manager.close()
 
 app = FastAPI(lifespan=lifespan)
 
@@ -144,6 +203,53 @@ async def delete_cluster(cluster_id: int, db: Session = Depends(get_session)):
         raise HTTPException(status_code=404, detail="Cluster not found")
     db.delete(cluster)
     db.commit()
+    return {"status": "deleted"}
+
+# --- Server (SSH) Management Endpoints ---
+class ServerCreateRequest(BaseModel):
+    name: str
+    host: str
+    user: str
+    password: Optional[str] = None
+    key_path: Optional[str] = None
+    description: Optional[str] = None
+
+@app.post("/api/servers")
+async def add_server(request: ServerCreateRequest, db: Session = Depends(get_session)):
+    server = models.Server(
+        name=request.name,
+        host=request.host,
+        user=request.user,
+        password=request.password,
+        key_path=request.key_path,
+        description=request.description
+    )
+    db.add(server)
+    try:
+        db.commit()
+        db.refresh(server)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Server already exists or error: {str(e)}")
+    
+    # Restart SSH MCP server to refresh inventory
+    await ssh_manager.close()
+    
+    return {"id": server.id, "name": server.name}
+
+@app.get("/api/servers")
+async def list_servers(db: Session = Depends(get_session)):
+    servers = db.exec(select(models.Server)).all()
+    return servers
+
+@app.delete("/api/servers/{server_id}")
+async def delete_server(server_id: int, db: Session = Depends(get_session)):
+    server = db.get(models.Server, server_id)
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+    db.delete(server)
+    db.commit()
+    await ssh_manager.close()
     return {"status": "deleted"}
 
 class ChatRequest(BaseModel):
@@ -260,17 +366,21 @@ async def chat(request: ChatRequest, db: Session = Depends(get_session)):
     db.add(user_msg)
     db.commit()
 
-    # 4. Get MCP Session
+    # 4. Get MCP Sessions
     mcp_session = await session_manager.get_mcp_session(cluster_id, db)
+    ssh_session = await ssh_manager.get_ssh_session(db)
     
-    # 5. Get available tools and categorize them
-    mcp_tools = await mcp_session.list_tools()
+    # 5. Get available tools from all MCP servers and categorize them
+    cluster_tools = await mcp_session.list_tools()
+    ssh_tools = await ssh_session.list_tools()
+
+    all_mcp_tools = list(cluster_tools.tools) + list(ssh_tools.tools)
     
     read_tools = []
     write_tools = []
-    READ_PREFIXES = ["get_", "list_", "describe_", "explain_", "check_"]
+    READ_PREFIXES = ["get_", "list_", "describe_", "explain_", "check_", "ssh_ls", "ssh_cat", "ssh_tail", "ssh_grep", "ssh_ps", "ssh_df", "ssh_free", "ssh_netstat"]
     
-    for tool in mcp_tools.tools:
+    for tool in all_mcp_tools:
         tool_schema = {
             "type": "function",
             "function": {
@@ -287,13 +397,14 @@ async def chat(request: ChatRequest, db: Session = Depends(get_session)):
         else:
             write_tools.append(tool_schema)
 
-    system_prompt = f"""你是一个 Kure AI 排障侦探。你的任务是调查并诊断 Kubernetes 集群中的问题。
-
+    system_prompt = f"""你是一个 Kure AI 排障侦探。你的任务是调查并诊断 Kubernetes 集群以及相关业务服务器中的问题。
+    
 ## 工作准则
-1. **只负责调查**：使用 Read-only 工具（获取日志、描述资源、列出事件）查明真相。
-2. **严禁修复建议**：不要在回复中提供 `kubectl` 命令、YAML 配置或任何具体的修复指令。那是“外科医生”的活。
-3. **只说结论**：客观、清晰地总结你发现了什么（例如：“Pod 状态为 Ready，但副本数目前仅为1”）。
-4. **简洁专业**：你的回复结束后，后续会有专门的组件根据你的调查结论生成修复方案。
+1. **全方位侦察**：你可以使用 K8s 工具查看容器状态，也可以使用 SSH 工具查询物理机/虚拟机节点的状态。
+2. **多节点协作**：如果问题涉及多个服务器，请先调用 `list_servers` 获取服务器列表，然后按需对不同服务器执行调查。
+3. **只负责调查**：使用 Read-only 工具（获取日志、描述资源、SSH 查看进程/内存）查明真相。
+4. **严禁修复建议**：不要在回复中提供具体的修复指令。那是“外科医生”的活。
+5. **只说结论**：客观、清晰地总结你发现了什么。
 """
 
     llm_messages = [{"role": "system", "content": system_prompt}]
@@ -377,7 +488,12 @@ async def chat(request: ChatRequest, db: Session = Depends(get_session)):
                     })}
                     
                     try:
-                        result = await mcp_session.call_tool(f_name, f_args)
+                        # Determine which session to use based on tool name
+                        target_session = mcp_session
+                        if f_name.startswith("ssh_") or f_name == "list_servers":
+                            target_session = ssh_session
+
+                        result = await target_session.call_tool(f_name, f_args)
                         result_str = "\n".join([c.text for c in result.content if hasattr(c, 'text')])
                         
                         # 2. Save Tool Result to DB
@@ -491,7 +607,11 @@ class RemediationExecuteRequest(BaseModel):
 
 @app.post("/api/remediation/execute")
 async def execute_remediation(request: RemediationExecuteRequest, db: Session = Depends(get_session)):
-    mcp_session = await session_manager.get_mcp_session(request.cluster_id, db)
+    # Determine session
+    if request.tool_name.startswith("ssh_"):
+        target_session = await ssh_manager.get_ssh_session(db)
+    else:
+        target_session = await session_manager.get_mcp_session(request.cluster_id, db)
     
     print(f"--- Executing Remediation: tool={request.tool_name} ---")
     
@@ -502,7 +622,7 @@ async def execute_remediation(request: RemediationExecuteRequest, db: Session = 
             if not isinstance(tool_args["patch"], str):
                 tool_args["patch"] = json.dumps(tool_args["patch"])
 
-        result = await mcp_session.call_tool(request.tool_name, tool_args)
+        result = await target_session.call_tool(request.tool_name, tool_args)
         output_text = "".join([item.text for item in result.content if hasattr(item, "text")])
         is_error = getattr(result, "isError", False)
         

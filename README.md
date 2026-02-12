@@ -128,6 +128,10 @@ docker-compose up --build
 ```
 (注意：此命令会自动构建前端、后端及 MCP Server)
 
+```shell
+lsof -i :8000 -t | xargs kill -9 && export PYTHONPATH=$PYTHONPATH:. && /Users/xuqizheng/.pyenv/versions/3.10.13/bin/python3 -m app.main
+```
+
 访问 UI：`http://localhost:5173`。
 
 ---
