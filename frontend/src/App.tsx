@@ -298,102 +298,121 @@ const App: React.FC = () => {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let assistantContent = '';
+      let sseBuffer = '';
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
+        sseBuffer += decoder.decode(value, { stream: true });
 
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6));
+        const events = sseBuffer.split('\n\n');
+        sseBuffer = events.pop() || '';
 
-              switch (data.type) {
-                case 'thinking':
-                  setMessages(prev => {
-                    const filtered = prev.filter(m => m.type !== 'status' || m.statusType !== 'thinking');
-                    return [...filtered, {
-                      role: 'assistant',
-                      content: data.message,
-                      type: 'status',
-                      statusType: 'thinking'
-                    }];
-                  });
-                  break;
+        for (const event of events) {
+          const dataLines = event
+            .split('\n')
+            .filter(line => line.startsWith('data: '))
+            .map(line => line.slice(6));
 
-                case 'status':
-                  setMessages(prev => {
-                    // Try to update an existing status message if it's a result for a pending call
-                    if (data.statusType === 'tool_result') {
-                      const lastMsg = prev[prev.length - 1];
-                      if (lastMsg && lastMsg.statusType === 'tool_call' && lastMsg.toolName === data.toolName) {
-                        return [
-                          ...prev.slice(0, -1),
-                          {
-                            ...lastMsg,
-                            statusType: 'tool_result',
-                            result: data.result,
-                            content: data.content
-                          }
-                        ];
-                      }
-                    }
+          if (dataLines.length === 0) continue;
 
-                    const filtered = prev.filter(m => m.type !== 'status' || m.statusType === 'tool_call' || m.statusType === 'tool_result');
-                    return [...filtered, {
-                      role: 'assistant',
-                      content: data.content,
-                      type: 'status',
-                      statusType: data.statusType || 'tool_call',
-                      toolName: data.toolName,
-                      args: data.arguments,
-                      result: data.result
-                    }];
-                  });
-                  break;
+          try {
+            const data = JSON.parse(dataLines.join('\n'));
 
-                case 'assistant':
-                  assistantContent += data.content;
-                  setMessages(prev => {
+            switch (data.type) {
+              case 'thinking':
+                setMessages(prev => {
+                  const filtered = prev.filter(m => m.type !== 'status' || m.statusType !== 'thinking');
+                  return [...filtered, {
+                    role: 'assistant',
+                    content: data.message,
+                    type: 'status',
+                    statusType: 'thinking'
+                  }];
+                });
+                break;
+
+              case 'status':
+                setMessages(prev => {
+                  // Try to update an existing status message if it's a result for a pending call
+                  if (data.statusType === 'tool_result') {
                     const lastMsg = prev[prev.length - 1];
-
-                    if (lastMsg && lastMsg.role === 'assistant' && lastMsg.type === 'text') {
+                    if (lastMsg && lastMsg.statusType === 'tool_call' && lastMsg.toolName === data.toolName) {
                       return [
                         ...prev.slice(0, -1),
-                        { ...lastMsg, content: assistantContent }
-                      ];
-                    } else {
-                      return [
-                        ...prev,
-                        { role: 'assistant', content: assistantContent, type: 'text' }
+                        {
+                          ...lastMsg,
+                          statusType: 'tool_result',
+                          result: data.result,
+                          content: data.content
+                        }
                       ];
                     }
-                  });
-                  break;
-
-                case 'done':
-                  if (!currentConversationId && data.conversation_id) {
-                    setCurrentConversationId(data.conversation_id);
-                    setHistoryTrigger(prev => prev + 1);
                   }
-                  // Do NOT filter out status messages here, otherwise thinking block disappears
-                  break;
 
-                case 'error':
-                  setMessages(prev => [...prev.filter(m => m.type !== 'status'), {
+                  const filtered = prev.filter(m => m.type !== 'status' || m.statusType === 'tool_call' || m.statusType === 'tool_result');
+                  return [...filtered, {
                     role: 'assistant',
-                    content: `错误: ${data.message}`,
-                    type: 'text'
-                  }]);
-                  break;
-              }
-            } catch (parseError) {
-              console.error('Failed to parse SSE data:', parseError);
+                    content: data.content,
+                    type: 'status',
+                    statusType: data.statusType || 'tool_call',
+                    toolName: data.toolName,
+                    args: data.arguments,
+                    result: data.result
+                  }];
+                });
+                break;
+
+              case 'assistant':
+                assistantContent += data.content;
+                setMessages(prev => {
+                  const lastMsg = prev[prev.length - 1];
+
+                  if (lastMsg && lastMsg.role === 'assistant' && lastMsg.type === 'text') {
+                    return [
+                      ...prev.slice(0, -1),
+                      { ...lastMsg, content: assistantContent }
+                    ];
+                  } else {
+                    return [
+                      ...prev,
+                      { role: 'assistant', content: assistantContent, type: 'text' }
+                    ];
+                  }
+                });
+                break;
+
+              case 'done':
+                if (!currentConversationId && data.conversation_id) {
+                  setCurrentConversationId(data.conversation_id);
+                  setHistoryTrigger(prev => prev + 1);
+                }
+                // Do NOT filter out status messages here, otherwise thinking block disappears
+                break;
+
+              case 'error':
+                setMessages(prev => [...prev.filter(m => m.type !== 'status'), {
+                  role: 'assistant',
+                  content: `错误: ${data.message}`,
+                  type: 'text'
+                }]);
+                break;
             }
+          } catch (parseError) {
+            console.error('Failed to parse SSE data:', parseError, event);
           }
+        }
+      }
+
+      if (sseBuffer.trim()) {
+        try {
+          const dataLine = sseBuffer.split('\n').find(line => line.startsWith('data: '));
+          if (dataLine) {
+            JSON.parse(dataLine.slice(6));
+          }
+        } catch (parseError) {
+          console.error('Trailing SSE buffer parse error:', parseError);
         }
       }
     } catch (error) {

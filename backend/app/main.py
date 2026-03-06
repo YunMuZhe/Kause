@@ -36,13 +36,30 @@ client = OpenAI(
 # --- Multi-Cluster Session Manager ---
 class ClusterSessionManager:
     def __init__(self):
-        self._sessions: Dict[int, Tuple[ClientSession, Any]] = {} # id -> (session, exit_stack)
+        self._sessions: Dict[int, Tuple[ClientSession, Any, str]] = {} # id -> (session, exit_stack, kubeconfig_path)
         self._lock = asyncio.Lock()
+
+    async def _close_cluster_session(self, cluster_id: int):
+        session_info = self._sessions.pop(cluster_id, None)
+        if not session_info:
+            return
+
+        _, stack, kubeconfig_path = session_info
+        try:
+            await stack.aclose()
+        finally:
+            if kubeconfig_path and os.path.exists(kubeconfig_path):
+                os.unlink(kubeconfig_path)
 
     async def get_mcp_session(self, cluster_id: int, db: Session) -> ClientSession:
         async with self._lock:
             if cluster_id in self._sessions:
-                return self._sessions[cluster_id][0]
+                cached_session, _, _ = self._sessions[cluster_id]
+                try:
+                    await cached_session.list_tools()
+                    return cached_session
+                except Exception:
+                    await self._close_cluster_session(cluster_id)
             
             # Initialize new session for cluster
             cluster = db.get(models.Cluster, cluster_id)
@@ -77,17 +94,22 @@ class ClusterSessionManager:
                 session = await stack.enter_async_context(ClientSession(read, write))
                 await session.initialize()
                 
-                self._sessions[cluster_id] = (session, stack)
+                self._sessions[cluster_id] = (session, stack, tmp.name)
                 return session
             except Exception as e:
                 if os.path.exists(tmp.name):
                     os.unlink(tmp.name)
                 raise HTTPException(status_code=500, detail=f"Failed to start MCP server: {str(e)}")
 
+    async def close_cluster(self, cluster_id: int):
+        async with self._lock:
+            await self._close_cluster_session(cluster_id)
+
     async def close_all(self):
-        for cluster_id, (session, stack) in self._sessions.items():
-            await stack.aclose()
-        self._sessions.clear()
+        async with self._lock:
+            cluster_ids = list(self._sessions.keys())
+            for cluster_id in cluster_ids:
+                await self._close_cluster_session(cluster_id)
 
 session_manager = ClusterSessionManager()
 
@@ -139,6 +161,7 @@ async def list_clusters(db: Session = Depends(get_session)):
 
 @app.delete("/api/clusters/{cluster_id}")
 async def delete_cluster(cluster_id: int, db: Session = Depends(get_session)):
+    await session_manager.close_cluster(cluster_id)
     cluster = db.get(models.Cluster, cluster_id)
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
@@ -253,6 +276,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_session)):
     # 3. Save User Message
     user_msg = models.Message(
         conversation_id=request.conversation_id,
+        cluster_id=cluster_id,
         role="user",
         content=request.message,
         type="text"
@@ -357,6 +381,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_session)):
                     # 1. Save Tool Call to DB
                     db_tool_call = models.Message(
                         conversation_id=request.conversation_id,
+                        cluster_id=cluster_id,
                         role="assistant",
                         type="status",
                         content=json.dumps({
@@ -383,6 +408,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_session)):
                         # 2. Save Tool Result to DB
                         db_tool_result = models.Message(
                             conversation_id=request.conversation_id,
+                            cluster_id=cluster_id,
                             role="assistant",
                             type="status",
                             content=json.dumps({
@@ -414,6 +440,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_session)):
                         # 3. Save Error Result to DB
                         db_err_result = models.Message(
                             conversation_id=request.conversation_id,
+                            cluster_id=cluster_id,
                             role="assistant",
                             type="status",
                             content=json.dumps({
@@ -455,6 +482,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_session)):
             # Save Final Response
             final_msg = models.Message(
                 conversation_id=request.conversation_id,
+                cluster_id=cluster_id,
                 role="assistant",
                 content=full_content,
                 type="text"
@@ -478,8 +506,20 @@ async def list_conversations(db: Session = Depends(get_session)):
 
 @app.get("/api/conversations/{conversation_id}")
 async def get_conversation_history(conversation_id: int, db: Session = Depends(get_session)):
+    conversation = db.get(models.Conversation, conversation_id)
+    conversation_cluster_id = conversation.cluster_id if conversation else None
     messages = db.exec(select(models.Message).where(models.Message.conversation_id == conversation_id).order_by(models.Message.created_at)).all()
-    return [{"id": m.id, "role": m.role, "content": m.content, "type": m.type, "cluster_id": m.cluster_id, "created_at": m.created_at} for m in messages]
+    return [
+        {
+            "id": m.id,
+            "role": m.role,
+            "content": m.content,
+            "type": m.type,
+            "cluster_id": m.cluster_id if m.cluster_id is not None else conversation_cluster_id,
+            "created_at": m.created_at,
+        }
+        for m in messages
+    ]
 
 class RemediationExecuteRequest(BaseModel):
     conversation_id: int
@@ -509,6 +549,7 @@ async def execute_remediation(request: RemediationExecuteRequest, db: Session = 
         # Save execution result to DB
         exec_msg = models.Message(
             conversation_id=request.conversation_id,
+            cluster_id=request.cluster_id,
             role="assistant",
             type="remediation_result",
             content=json.dumps({
@@ -531,6 +572,7 @@ async def execute_remediation(request: RemediationExecuteRequest, db: Session = 
         # Save error to DB
         error_msg = models.Message(
             conversation_id=request.conversation_id,
+            cluster_id=request.cluster_id,
             role="assistant",
             type="remediation_result",
             content=json.dumps({
@@ -554,6 +596,7 @@ async def dismiss_remediation(request: RemediationExecuteRequest, db: Session = 
     # Save dismissal to DB
     dismiss_msg = models.Message(
         conversation_id=request.conversation_id,
+        cluster_id=request.cluster_id,
         role="assistant",
         type="remediation_result",
         content=json.dumps({
