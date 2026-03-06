@@ -18,6 +18,7 @@ class Conversation(SQLModel, table=True):
 class Message(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     conversation_id: int = Field(foreign_key="conversation.id")
+    cluster_id: Optional[int] = Field(default=None, foreign_key="cluster.id")
     role: str # "user" | "assistant" | "system"
     content: str = Field(sa_column=Column(Text)) # Text or JSON string
     type: str # "text" | "widget"

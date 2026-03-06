@@ -1,5 +1,6 @@
 from sqlmodel import SQLModel, create_engine, Session
 import os
+from sqlalchemy import text
 
 from .config import get_settings
 
@@ -15,6 +16,13 @@ engine = create_engine(
 def create_db_and_tables():
     from . import models
     SQLModel.metadata.create_all(engine)
+
+    # Lightweight forward-compatible migration for existing deployments.
+    # Adds message.cluster_id when upgrading from older schema versions.
+    with engine.begin() as conn:
+        result = conn.execute(text("SHOW COLUMNS FROM message LIKE 'cluster_id'"))
+        if result.first() is None:
+            conn.execute(text("ALTER TABLE message ADD COLUMN cluster_id INTEGER NULL"))
 
 def get_session():
     with Session(engine) as session:
