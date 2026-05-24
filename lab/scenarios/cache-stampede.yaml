@@ -1,0 +1,47 @@
+name: cache-stampede
+label: 缓存击穿
+description: 通过 Java 入口触发多次回源，观察跨服务延迟和 trace fan-out
+namespace: kube-copilot-lab
+service_entry: order-java-fault
+request_params:
+  fault: none
+  downstreamFault: cache-stampede
+  fanout: 5
+  userId: 42
+  tier: gold
+tags:
+  - performance
+  - cache
+prompt_override: |
+  本次目标是定位 cache-stampede / fanout 带来的链路放大和延迟上升。
+  除非当前请求直接出现 SQL 慢或 SQL 错误证据，否则不要进入 MySQL schema / EXPLAIN 分析。
+expectations:
+  root_cause_keywords:
+    - cache stampede
+    - 缓存击穿
+    - fanout
+    - 回源
+    - 延迟
+  root_cause_min_hits: 1
+  evidence_keywords:
+    - trace
+    - pricing
+  evidence_min_hits: 1
+  trace_keywords:
+    - /api/orders/checkout-preview
+    - pricing
+  trace_min_hits: 1
+  forbidden_trace_routes:
+    - /healthz
+    - /readyz
+  require_non_health_trace: true
+  required_tools:
+    - probe_service_http
+    - query_signoz_traces
+  forbidden_tools:
+    - explain_mysql_query
+  required_sections:
+    - 当前症状
+    - 证据链
+    - 根因判断
+    - 修复建议

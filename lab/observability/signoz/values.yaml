@@ -1,0 +1,29 @@
+global:
+  storageClass: local-path
+  cloud: other
+  clusterName: orbstack
+
+clusterName: orbstack
+
+clickhouse:
+  persistence:
+    enabled: true
+    storageClass: local-path
+    size: 30Gi
+
+signoz:
+  persistence:
+    enabled: true
+    storageClass: local-path
+    size: 10Gi
+
+otelCollector:
+  service:
+    type: ClusterIP
+  resources:
+    requests:
+      cpu: 100m
+      memory: 200Mi
+
+signoz-otel-gateway:
+  enabled: false

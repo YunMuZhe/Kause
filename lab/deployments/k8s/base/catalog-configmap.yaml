@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: catalog-fault-config
+  namespace: kube-copilot-lab
+data:
+  PORT: "8080"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector.observability.svc.cluster.local:4317"
+  OTEL_SERVICE_NAME: "catalog-fault"
+  BASE_LATENCY_MS: "40"
+  DEPLOYMENT_ENVIRONMENT: "lab"
+  DEPENDENCY_BASE_URL: "http://payment-fault:8081"
+  FAULT_MODE: "none"
+  USER_TIER: "gold"

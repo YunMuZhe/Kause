@@ -78,6 +78,10 @@ mysql_data/
 # Logs
 *.log
 logs/
+runtime/*
+!runtime/README.md
+
+models.yaml
 
 # Local configuration
 local_settings.py

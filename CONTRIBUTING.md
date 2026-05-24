@@ -23,12 +23,12 @@
 
 1.  **启动基础服务**
     ```bash
-    docker-compose up -d mysql
+    docker compose up -d mysql
     ```
 
 2.  **启动后端**
     ```bash
-    cd backend
+    cd apps/backend
     pip install -r requirements.txt
     cp .env.example .env # 配置您的 API Key
     uvicorn app.main:app --reload
@@ -36,14 +36,14 @@
 
 3.  **启动前端**
     ```bash
-    cd frontend
+    cd apps/frontend
     npm install
     npm run dev
     ```
 
 4.  **编译 MCP Server**
     ```bash
-    cd mcp-server
+    cd apps/mcp-server
     go build -o mcp-server main.go
     # 确保后端 .env 中 APP_GO_SERVER_PATH 指向此二进制文件
     ```

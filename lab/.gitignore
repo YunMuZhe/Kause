@@ -1,0 +1,7 @@
+.venv/
+services/catalog-fault/catalog-fault
+services/payment-fault/payment-fault
+legacy/qwen-agent/.env
+legacy/qwen-agent/.venv/
+services/order-java-fault/target/
+harness/output/

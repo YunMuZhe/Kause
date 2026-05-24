@@ -1,0 +1,52 @@
+name: slow-sql
+label: 慢 SQL
+description: Java 服务触发慢 SQL，并要求 agent 自动做表结构和 EXPLAIN 分析
+namespace: kube-copilot-lab
+service_entry: order-java-fault
+request_params:
+  fault: slow-sql
+  downstreamFault: none
+  fanout: 1
+  userId: 42
+  tier: gold
+tags:
+  - java
+  - sql
+  - trace
+prompt_override: |
+  本次目标是定位 slow-sql。
+  如果日志里同时存在历史 null-pointer 残留，但当前请求是 HTTP 200 且 queryLabel=slowOrdersByCustomerCast，
+  应优先收敛到慢 SQL，不要把历史 NPE 当作本次主根因。
+expectations:
+  root_cause_keywords:
+    - 慢 sql
+    - slow sql
+    - 索引
+    - explain
+    - 全表扫描
+    - cast
+  root_cause_min_hits: 2
+  evidence_keywords:
+    - db.query.template
+    - slowordersbycustomercast
+    - orders
+  evidence_min_hits: 1
+  trace_keywords:
+    - /api/orders/checkout-preview
+    - slowOrdersByCustomerCast
+  trace_min_hits: 1
+  forbidden_trace_routes:
+    - /healthz
+    - /readyz
+  require_non_health_trace: true
+  required_tools:
+    - probe_service_http
+    - query_signoz_traces
+    - list_mysql_tables
+    - describe_mysql_table
+    - explain_mysql_query
+  required_sections:
+    - 当前症状
+    - 证据链
+    - 根因判断
+    - 修复建议

@@ -1,138 +1,317 @@
-# ☸️ Kause
+# Kause
 
-![Kause Slogan](static/slogan.png)
+Kause is an AI-assisted Kubernetes incident investigation workspace. It combines:
 
-> **K8S-cause: Find the cause, fix the pause.** Your AI-Powered SRE Teammate.
+- a React/FastAPI product surface for chat and lab-style investigations
+- a Go MCP server that exposes Kubernetes, trace, and MySQL diagnostics as tools
+- a local fault lab with Java + Go services, in-cluster MySQL, and SigNoz
+- a harness layer for repeatable benchmark runs across models and agent styles
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/mark3labs/mcp-go)](https://goreportcard.com/report/github.com/mark3labs/mcp-go)
-![Python](https://img.shields.io/badge/python-v3.10+-blue.svg)
-![License](https://img.shields.io/badge/license-MIT-green)
-![Status](https://img.shields.io/badge/status-active-success.svg)
+This repository is already past the “toy demo” stage. You can use it to:
 
-[🇨🇳 中文文档](README.md)
+- trigger realistic request-level failure scenarios
+- let an agent investigate with K8S, traces, logs, and SQL evidence
+- compare MiniMax / Qwen style models on the same scenarios
+- iterate on prompts, tools, and evidence quality with measurable feedback
 
----
+## Current Capabilities
 
-## 😫 The Pain: Why Kause?
+### Product layer
 
-- **"Ever spent 2 hours debugging a `CrashLoopBackOff` only to find a typo?"**
-- **"Need to fix production but terrified of copy-pasting the wrong `kubectl patch`?"**
-- **"Drowning in alerts but starving for context?"**
+- Multi-cluster chat-style troubleshooting UI
+- Dedicated Lab 2.0 page for structured incident investigation
+- FastAPI orchestration layer that:
+  - probes live services
+  - calls MCP tools
+  - queries SigNoz traces
+  - drives SQL diagnostics when slow-query evidence appears
 
-Kubernetes is powerful, but troubleshooting it is often manual, repetitive, and error-prone. You need more than a dashboard; you need a teammate.
+### MCP diagnostics layer
 
-## 🚀 The Solution: AI Detective & Surgeon
+- Kubernetes resource and event inspection
+- Pod status and log retrieval
+- HTTP probing from inside the cluster
+- SigNoz trace queries
+- MySQL metadata and `EXPLAIN` tools for slow SQL analysis
 
-**Kause** isn't just a chatbot; it's an **Agentic System** that interacts directly with your cluster using the Model Context Protocol (MCP).
+### Fault lab
 
-### ✨ Key Features
+- `order-java-fault`: Spring Boot entry service
+- `catalog-fault`: Go service
+- `payment-fault`: Go dependency service
+- `lab-mysql`: seeded MySQL with `orders` / `order_items`
+- SigNoz + OTEL collector integration
 
-#### 🕵️ AI Detective (Sherlock Mode)
-Instead of asking you to paste logs, Kause **goes and looks for itself**.
-- **Deep Investigation**: Automatically fetches Pod status, Logs, Events, and YAML specs.
-- **Context-Aware**: Understands service dependencies and cluster topology.
-- **Root Cause Analysis**: Correlates events (e.g., "OOMKilled") with logs ("Out of memory error") to tell you *why*, not just *what*.
+### Benchmark / harness layer
 
-![AI Detective Demo](static/example1/demo-detective.png)
+- Scenario-driven benchmark runs
+- Model matrix execution
+- Structured Markdown + JSON artifacts
+- Scoring against root-cause, evidence, trace, and tool-path expectations
 
-#### 🩺 Auto-Surgeon (Precisely Fix It)
-Once the problem is found, Kause doesn't just say "fix it"; it **writes the fix for you**.
-- **JSON Patch Generation**: Generates precise, RFC 6902 compliant JSON Patches to modify resources surgically.
-- **Validation**: Ensures patches are syntactically correct before proposing them.
-
-![Auto Surgeon Demo](static/example1/demo-prescription.png)
-
-#### 🛡️ Human-in-the-Loop (Safety First)
-We believe in **AI assistance, not AI dominance**.
-- **Preview Before Apply**: See exactly what will change (Git-style Diff) before any write operation happens.
-- **Strict Approval**: No patch is applied without your explicit confirmation.
-- **Audit Logs**: Every action is recorded.
-
-![Safety Preview Demo](static/example1/demo-safety-preview.png)
-
-#### ✅ Operation Complete
-The fix is applied, and Kause verifies the cluster state.
-
-![Success Demo1](static/example1/success.png)
-![Success Demo2](static/example1/success-pod-yaml.png)
-
-### Scenario 2: Ingress Hijacking (Path Matching Error)
-
-**Story**:
-You are migrating `/api/payment` traffic to a new microservice.
-
-**Misconfiguration**:
-When configuring the new Ingress rules, you typo the path (e.g., using plural `payments` instead of `payment`) or forget the `/api` prefix, causing **exact match failure**.
-
-**Consequence**:
-Because the specific rule doesn't match, traffic falls through to the legacy service's "greedy regex" (e.g., `/api/.*`). The requests are "hijacked" by the old service, causing silent failures or version mismatches.
-
-**Simulation YAML**: [ingress-hijack-final.yaml](mcp-server/examples/ingress-hijack-final.yaml)
-
-**Kause Investigation**:
-![Detective View](static/example2/demo-detective.png)
-![Prescription View](static/example2/demo-prescription.png)
-![Execution Success](static/example2/success1.png)
-![Traffic Verification](static/example2/success2.png)
-
----
-
-## 🏗️ Architecture
-
-Kause uses a modular architecture separating the Brain (LLM), the Body (Backend), and the Hands (MCP Server).
+## Architecture
 
 ```mermaid
 graph TD
-    User["User / Frontend"] -->|Config & Commands| Backend["Python Backend (The Brain)"]
-    Backend -->|LLM Context| Gemini["Alibaba Qwen / OpenAI Models"]
-    Backend -->|MCP Tool Calls| MCP["Go MCP Server (The Hands)"]
-    MCP -->|K8s API| K8s["Kubernetes Cluster"]
-    
-    subgraph "Safe Execution Boundary"
-        MCP
+    User["User / Browser<br/>Chat UI + Lab UI"] --> FE["React Frontend<br/>apps/frontend<br/>- chat shell<br/>- lab workbench<br/>- result visualization"]
+    FE --> BE["FastAPI Backend<br/>apps/backend<br/>- chat orchestration<br/>- lab investigation loop<br/>- cluster/session management"]
+
+    BE --> LLM["LLM Provider<br/>MiniMax / Qwen / OpenAI-compatible APIs<br/>- reasoning<br/>- tool selection<br/>- structured markdown output"]
+    BE --> MCP["Go MCP Server<br/>apps/mcp-server<br/>- K8S tools<br/>- trace tools<br/>- MySQL read-only diagnostics"]
+
+    MCP --> K8S["Kubernetes Cluster<br/>OrbStack or remote<br/>- namespaces<br/>- pods/services/deployments"]
+    MCP --> CH["SigNoz / ClickHouse<br/>observability namespace<br/>- trace storage<br/>- span evidence queries"]
+    MCP --> MYSQL["Lab MySQL<br/>kube-copilot-lab<br/>- schema metadata<br/>- EXPLAIN diagnostics"]
+
+    subgraph LAB["Fault Lab Runtime"]
+        OJ["order-java-fault<br/>Spring Boot<br/>- MySQL query path<br/>- OTEL spans<br/>- slow-sql / null-pointer injection"]
+        CAT["catalog-fault<br/>Go<br/>- item lookup<br/>- payment fanout<br/>- cache-stampede behavior"]
+        PAY["payment-fault<br/>Go<br/>- pricing lookup<br/>- db-timeout simulation"]
+        OJ --> CAT
+        CAT --> PAY
+        OJ --> MYSQL
     end
-    
-    style User fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#0d47a1
-    style Backend fill:#fff3e0,stroke:#ef6c00,stroke-width:2px,color:#e65100
-    style MCP fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#1b5e20
-    style K8s fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#4a148c
+
+    K8S --> LAB
+    LAB --> OTEL["OTEL Collector<br/>signoz-otel-collector / otel-collector alias"]
+    OTEL --> CH
+
+    Harness["Harness<br/>lab/harness<br/>- replay scenarios<br/>- compare models<br/>- score outputs"] --> BE
+    Harness --> LLM
+    Harness --> MCP
+
+    Legacy["Legacy Qwen-Agent Runner<br/>lab/legacy/qwen-agent"] -. optional adapter .-> Harness
 ```
 
----
+## Repository Layout
 
-## ⚡ Quick Start
+```text
+apps/
+  backend/        FastAPI orchestration and APIs
+  frontend/       React/Vite product UI
+  mcp-server/     Go MCP server for K8S / trace / SQL diagnostics
+  mcp-ssh-server/ Optional SSH-oriented MCP helper
 
-### Prerequisites
-- Docker & Docker Compose
-- A Kubernetes cluster (OrbStack, Minikube, or remote)
-- `~/.kube/config` accessible
+lab/
+  deployments/    K8S manifests for lab services
+  observability/  SigNoz install assets
+  services/       Go + Spring Boot fault services
+  scenarios/      Benchmark scenario definitions
+  harness/        Repeatable benchmark runner
+  legacy/         Older Qwen-Agent integration
 
-### 1. Clone & Setup
+runtime/
+  compose/        Local compose persistence
+```
+
+## Quick Start
+
+There are really two main paths:
+
+1. bring up the product control plane (`frontend + backend + MCP`)
+2. bring up the fault lab (`K8S + SigNoz + services`)
+
+If you want the full workflow, do both.
+
+### 1. Prerequisites
+
+- Docker / Docker Compose
+- Node.js 20+
+- Python 3.10+
+- Go 1.22+ if you want to build MCP locally
+- `kubectl`
+- a reachable Kubernetes cluster
+- one or more model API keys
+
+### 2. Configure backend model access
+
 ```bash
-git clone https://github.com/your-username/kube-cluster-copilot.git
-cd kube-cluster-copilot
+cp ./apps/backend/.env.example ./apps/backend/.env
 ```
 
-### 2. Configure Secrets
-Create a `.env` file in `backend/`:
+At minimum, set:
+
+```env
+APP_LLM__API_KEY=...
+APP_LLM__BASE_URL=https://api.minimax.chat/v1
+APP_LLM__MODEL_NAME=MiniMax-M2.7
+```
+
+If you also want Qwen in harness matrix runs, add:
+
+```env
+DASHSCOPE_API_KEY=...
+```
+
+### 3. Start the product stack
+
+The quickest path is Docker Compose:
+
 ```bash
-cp backend/.env.example backend/.env
-# Edit backend/.env and add your LLM API Key (e.g., Qwen/Dashscope, OpenAI)
-# APP_LLM__API_KEY=sk-xxx
-# APP_LLM__MODEL_NAME=qwen-max
+docker compose up --build
 ```
 
-### 3. Launch
+This starts:
+
+- `apps/frontend` on `http://127.0.0.1:5173`
+- `apps/backend`
+- `apps/mcp-server`
+- local compose MySQL for the product app
+
+### 4. Build the lab service images for OrbStack
+
+If your K8S runtime uses the OrbStack Docker engine, build into that context:
+
 ```bash
-docker-compose up --build
+docker context use orbstack
+docker build -t kube-cluster-copilot/catalog-fault:latest ./lab/services/catalog-fault
+docker build -t kube-cluster-copilot/payment-fault:latest ./lab/services/payment-fault
+docker build -t kube-cluster-copilot/order-java-fault:latest ./lab/services/order-java-fault
 ```
 
-Access the UI at `http://localhost:5173`.
+If you prefer not to switch the global context:
 
----
+```bash
+docker --context orbstack build -t kube-cluster-copilot/catalog-fault:latest ./lab/services/catalog-fault
+docker --context orbstack build -t kube-cluster-copilot/payment-fault:latest ./lab/services/payment-fault
+docker --context orbstack build -t kube-cluster-copilot/order-java-fault:latest ./lab/services/order-java-fault
+```
 
-## 🤝 Contributing
-We love PRs! Please check out our [Contributing Guide](CONTRIBUTING.md).
+### 5. Install SigNoz in Kubernetes
 
-## 📄 License
-MIT © 2024 Kube Cluster Copilot Team.
+```bash
+helm repo add signoz https://charts.signoz.io
+helm repo update
+helm upgrade --install signoz signoz/signoz \
+  --namespace observability \
+  --create-namespace \
+  -f ./lab/observability/signoz/values.yaml \
+  --wait \
+  --timeout 30m
+
+kubectl apply -f ./lab/observability/signoz/otel-collector-service.yaml
+```
+
+Access the UI:
+
+```bash
+kubectl -n observability port-forward svc/signoz 3301:8080
+```
+
+Open:
+
+- [http://127.0.0.1:3301](http://127.0.0.1:3301)
+
+### 6. Deploy the fault lab
+
+```bash
+kubectl apply -k ./lab/deployments/k8s/base
+
+kubectl -n kube-copilot-lab rollout status deploy/lab-mysql
+kubectl -n kube-copilot-lab rollout status deploy/catalog-fault
+kubectl -n kube-copilot-lab rollout status deploy/payment-fault
+kubectl -n kube-copilot-lab rollout status deploy/order-java-fault
+```
+
+### 7. Trigger a few known scenarios
+
+```bash
+kubectl -n kube-copilot-lab exec deploy/order-java-fault -- sh -lc \
+  'curl -sS "http://order-java-fault:8082/api/orders/checkout-preview?fault=slow-sql&downstreamFault=none&fanout=1&userId=42&tier=gold"'
+
+kubectl -n kube-copilot-lab exec deploy/order-java-fault -- sh -lc \
+  'curl -sS "http://order-java-fault:8082/api/orders/checkout-preview?fault=null-pointer&downstreamFault=none&fanout=1&userId=42&tier=gold"'
+
+kubectl -n kube-copilot-lab exec deploy/order-java-fault -- sh -lc \
+  'curl -sS "http://order-java-fault:8082/api/orders/checkout-preview?fault=none&downstreamFault=db-timeout&fanout=1&userId=42&tier=gold"'
+
+kubectl -n kube-copilot-lab exec deploy/catalog-fault -- sh -lc \
+  'curl -sS "http://catalog-fault:8080/api/catalog/items?fault=cache-stampede&fanout=5&tier=gold"'
+```
+
+### 8. Open the Lab UI
+
+Open the frontend at:
+
+- [http://127.0.0.1:5173](http://127.0.0.1:5173)
+
+Then switch to `Lab` mode and use the built-in presets:
+
+- `slow-sql`
+- `null-pointer`
+- `db-timeout`
+- `cache-stampede`
+
+### 9. Run harness benchmarks
+
+List scenarios:
+
+```bash
+./lab/harness/run.sh --list-scenarios
+```
+
+Run one:
+
+```bash
+./lab/harness/run.sh --scenario slow-sql
+```
+
+Run the main matrix:
+
+```bash
+./lab/harness/run.sh \
+  --scenario slow-sql \
+  --scenario null-pointer \
+  --scenario db-timeout \
+  --scenario cache-stampede \
+  --model-config lab/harness/models.yaml
+```
+
+Artifacts land in:
+
+```text
+lab/harness/output/
+```
+
+## Recommended Daily Workflow
+
+If you are iterating on the agent:
+
+1. bring up `frontend + backend`
+2. ensure `observability` and `kube-copilot-lab` are healthy
+3. reproduce one scenario from the Lab page
+4. inspect SigNoz traces
+5. tune prompt / tools / UI
+6. rerun harness for the affected scenarios
+
+That keeps the project grounded in repeatable evidence instead of one-off demos.
+
+## Current Roadmap
+
+### Near-term
+
+- Harden the benchmark baseline for all core scenarios
+- Add failure-tolerant harness summaries when a model API quota is exhausted
+- Improve production polish for the Lab UI and investigation reports
+- Publish a clean GitHub-ready repository narrative and screenshots
+
+### Next
+
+- Add side-by-side model comparison views in the frontend
+- Add framework comparison beyond the current `openai-tools` path
+- Add benchmark trend history and regression detection
+- Tighten cluster/session lifecycle and observability setup scripts
+
+### Later
+
+- Alert-triggered incident entrypoints
+- Automated postmortem and remediation suggestion flows
+- GitHub / GitLab code-context MCP integration
+- Closed-loop “detect -> investigate -> recommend -> validate” workflows
+
+## Related Docs
+
+- [apps/README.md](apps/README.md)
+- [lab/README.md](lab/README.md)
+- [lab/observability/signoz/README.md](lab/observability/signoz/README.md)
+- [lab/harness/README.md](lab/harness/README.md)

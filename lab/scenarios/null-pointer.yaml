@@ -1,0 +1,42 @@
+name: null-pointer
+label: 空指针异常
+description: Java 服务先完成下游调用，再在本地触发 NullPointerException
+namespace: kube-copilot-lab
+service_entry: order-java-fault
+request_params:
+  fault: null-pointer
+  downstreamFault: none
+  fanout: 1
+  userId: 42
+  tier: gold
+tags:
+  - java
+  - exception
+expectations:
+  root_cause_keywords:
+    - nullpointerexception
+    - 空指针
+    - npe
+    - 500
+  root_cause_min_hits: 1
+  evidence_keywords:
+    - exception
+    - trace
+  evidence_min_hits: 1
+  trace_keywords: []
+  trace_min_hits: 0
+  forbidden_trace_routes:
+    - /healthz
+    - /readyz
+  require_non_health_trace: false
+  required_tools:
+    - probe_service_http
+    - query_signoz_traces
+    - get_pod_logs
+  forbidden_tools:
+    - explain_mysql_query
+  required_sections:
+    - 当前症状
+    - 证据链
+    - 根因判断
+    - 修复建议

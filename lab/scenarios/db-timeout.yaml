@@ -1,0 +1,48 @@
+name: db-timeout
+label: 下游 DB 超时
+description: 通过 Java -> catalog -> payment 链路触发 payment-fault 的 DB timeout
+namespace: kube-copilot-lab
+service_entry: order-java-fault
+request_params:
+  fault: none
+  downstreamFault: db-timeout
+  fanout: 1
+  userId: 42
+  tier: gold
+tags:
+  - downstream
+  - timeout
+prompt_override: |
+  本次目标是定位 downstreamFault=db-timeout 的传播链。
+  如果入口服务已经返回 503，且消息中出现 pricing dependency failed / dependency returned status 500，
+  应优先沿 order-java-fault -> catalog-fault -> payment-fault 收敛，不要因为历史 slow SQL 日志去做 MySQL EXPLAIN。
+expectations:
+  root_cause_keywords:
+    - timeout
+    - 超时
+    - payment-fault
+    - database timeout
+    - db timeout
+  root_cause_min_hits: 2
+  evidence_keywords:
+    - 503
+    - trace
+  evidence_min_hits: 1
+  trace_keywords:
+    - /api/orders/checkout-preview
+    - payment-fault
+  trace_min_hits: 1
+  forbidden_trace_routes:
+    - /healthz
+    - /readyz
+  require_non_health_trace: true
+  required_tools:
+    - probe_service_http
+    - query_signoz_traces
+  forbidden_tools:
+    - explain_mysql_query
+  required_sections:
+    - 当前症状
+    - 证据链
+    - 根因判断
+    - 修复建议

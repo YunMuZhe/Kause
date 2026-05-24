@@ -6,11 +6,13 @@ services:
     image: mysql:8.0
     container_name: kause_mysql
     restart: always
+    ports:
+      - "3306:3306"
     environment:
       MYSQL_ROOT_PASSWORD: kause_secret
       MYSQL_DATABASE: kause
     volumes:
-      - ./mysql_data:/var/lib/mysql
+      - ./runtime/compose/mysql_data:/var/lib/mysql
     networks:
       - kause-net
     healthcheck:
@@ -21,7 +23,7 @@ services:
   # 2. Frontend (React + Nginx Proxy)
   frontend:
     build: 
-      context: ./frontend
+      context: ./apps/frontend
       dockerfile: Dockerfile
     ports:
       - "5173:80"  # Map host 5173 to container 80 (Nginx)
@@ -33,10 +35,10 @@ services:
   # 3. Backend (FastAPI "The Brain")
   backend:
     build: 
-      context: ./backend
+      context: ./apps/backend
       dockerfile: Dockerfile
     env_file:
-      - ./backend/.env
+      - ./apps/backend/.env
     environment:
       - MCP_SERVER_COMMAND=/usr/local/bin/mcp-server
       - APP_DB__HOST=mysql
@@ -55,7 +57,7 @@ services:
   # 4. MCP Server Provider (Binary Builder)
   mcp-server-provider:
     build:
-      context: ./mcp-server
+      context: ./apps/mcp-server
       dockerfile: Dockerfile
     command: ["cp", "/app/mcp-server", "/shared/mcp-server"]
     volumes:
