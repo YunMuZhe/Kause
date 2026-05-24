@@ -1,139 +1,445 @@
-# ☸️ Kause
+# Kause
 
-![Kause Slogan](static/slogan.png)
+[English README](README_EN.md)
 
-> **K8S-cause: 查明原因，解决停顿。** 您的 AI 智能 SRE 队友。
+Kause 是一个面向 Kubernetes 故障排查的 AI 调查工作台。它把下面几层能力整合到了一起：
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/mark3labs/mcp-go)](https://goreportcard.com/report/github.com/mark3labs/mcp-go)
-![Python](https://img.shields.io/badge/python-v3.10+-blue.svg)
-![License](https://img.shields.io/badge/license-MIT-green)
-![Status](https://img.shields.io/badge/status-active-success.svg)
+- React + FastAPI 的产品界面，支持 Chat 与 Lab 两种工作模式
+- 一个 Go 实现的 MCP Server，把 Kubernetes、Trace、MySQL 诊断能力暴露给大模型
+- 一套本地故障实验室，包含 Java / Go 微服务、集群内 MySQL、SigNoz 与 OTEL
+- 一套 Harness 基准测试层，用于批量跑场景、对比模型、评估 Agent 排查质量
 
-[🇬🇧 EN](README_EN.md)
+这个仓库已经不只是一个“能跑通的 demo”，而是一套可以持续迭代的实验与验证平台。你可以用它：
 
----
+- 复现请求级故障场景
+- 让 Agent 结合 K8S、日志、Trace、SQL 证据做真实排查
+- 对比 MiniMax、Qwen 等模型在同一批故障场景下的表现
+- 迭代 Prompt、工具链、证据质量，并用 Harness 做验证闭环
 
-## 😫 痛点：为什么选择 Kause？
+## 界面预览
 
-- **“有没有试过为了一个 `CrashLoopBackOff` 调试两小时，最后发现只是一个拼写错误？”**
-- **“需要修复生产环境，但由于害怕复制粘贴错误的 `kubectl patch` 而迟迟不敢动手？”**
-- **“淹没在报警信息中，却找不到任何上下文？”**
+### Lab 2.0 首页
 
-Kubernetes 很强大，但故障排查通常是手动的、重复的且容易出错的。除了仪表盘，您更需要一个队友。
+![Lab 首页](static/version2/Home.png)
 
-## 🚀 解决方案：AI 侦探 & 外科医生
+### 证据链与工具调用
 
-**Kause** 不仅仅是一个聊天机器人；它是一个使用模型上下文协议 (MCP) 直接与您的集群交互的 **Agentic System（智能体系统）**。
+![慢 SQL 证据链](static/version2/proof.png)
 
-### ✨ 核心特性
+### 调查时间线
 
-#### 🕵️ AI 侦探 (Sherlock Mode)
-Kause 不会让您粘贴日志，而是 **主动去查看**。
-- **深度调查**：自动获取 Pod 状态、日志、事件和 YAML 规格。
-- **上下文感知**：理解服务依赖关系和集群拓扑。
-- **根因分析**：将事件（如 "OOMKilled"）与日志（"Out of memory error"）关联起来，告诉您 *为什么* 发生，而不仅仅是 *发生了什么*。
+![调查时间线](static/version2/timeline.png)
 
-![AI 侦探演示](static/example1/demo-detective.png)
+### 修复建议
 
-#### 🩺 自动外科医生 (精准修复)
-一旦发现问题，Kause 不会只说“修复它”，它会 **为您编写修复方案**。
-- **生成 JSON Patch**：生成精准的、符合 RFC 6902 标准的 JSON Patch 来对外科手术般地修改资源。
-- **校验**：在提出补丁之前确保其语法正确。
+![修复建议](static/version2/Suggestion.png)
 
-![自动外科医生演示](static/example1/demo-prescription.png)
+### Harness 示例报告
 
-#### 🛡️ 人在回路 (Human-in-the-Loop)
-我们相信 **AI 是辅助，而非主宰**。
-- **预览修改**：在进行任何写操作之前，像 Git Diff 一样精确预览由于变更。
-- **严格审批**：没有您的明确确认，不会应用任何补丁。
-- **审计日志**：记录每一次操作。
+![Harness 报告](static/version2/HarnessReport2.png)
 
-![安全预览演示](static/example1/demo-safety-preview.png)
+## 当前能力
 
-#### ✅ 操作完成
-修复应用后，Kause 会自动验证集群状态。
+### 产品层
 
-![成功演示1](static/example1/success.png)
-![成功演示2](static/example1/success-pod-yaml.png)
+- 多集群 Chat 式排障入口
+- 独立的 Lab 2.0 调查页面
+- FastAPI 编排层负责：
+  - 探测业务入口服务
+  - 调用 MCP 工具
+  - 查询 SigNoz Trace
+  - 在出现慢 SQL 证据时自动触发表结构与 `EXPLAIN` 分析
 
-### 故障场景2: Ingress 流量黑洞（路径匹配失误）
+### MCP 诊断层
 
-**故事背景**：
-您正在将 `/api/payment` 流量迁移到新的微服务。
+- Kubernetes 资源、状态、事件查询
+- Pod 状态与日志抓取
+- 从集群内发起 HTTP 探测
+- SigNoz Trace 查询
+- MySQL 元数据查询与只读 `EXPLAIN` 诊断
 
-**配置失误**：
-在新 Ingress 中配置规则时，您不小心拼错了路径（例如写成了 plural 复数形式）或忘记了 `/api` 前缀，导致**精确匹配失效**。
+### 故障实验室
 
-**后果**：
-由于精确匹配未命中，流量没有进入新服务，而是被旧服务的“贪婪正则”（如 `/api/.*`）捕获，导致流量“消失”或进入了错误的服务版本，造成业务看似中断。
+- `order-java-fault`：Spring Boot 入口服务
+- `catalog-fault`：Go 服务
+- `payment-fault`：Go 下游依赖
+- `lab-mysql`：带种子数据的 MySQL
+- SigNoz + OTEL Collector 可观测链路
 
-**故障模拟 YAML**: [ingress-hijack-final.yaml](mcp-server/examples/ingress-hijack-final.yaml)
+### Benchmark / Harness 层
 
-**Kause 现场分析**：
-![错误流量](static/example2/demo-detective.png)
-![检验结果](static/example2/demo-prescription.png)
-![执行成功](static/example2/success1.png)
-![正确流量](static/example2/success2.png)
+- 基于场景的批量运行
+- 多模型矩阵执行
+- Markdown + JSON 结果产物
+- 基于根因、证据链、Trace、工具路径的结构化评分
 
----
+## 这些排查是怎么实现出来的
 
-## 🏗️ 架构
+慢 SQL、空指针、下游超时这类结论并不是单靠自然语言生成出来的，而是建立在一套明确的调查链路之上。以慢 SQL 场景为例，系统依赖了下面这些能力来逐步收敛证据：
 
-Kause 采用模块化架构，分离了大脑 (LLM)、身体 (Backend) 和手 (MCP Server).
+### 1. 入口 HTTP 探测
+
+后端会先探测业务入口服务，例如：
+
+- `order-java-fault /api/orders/checkout-preview`
+- `catalog-fault /api/catalog/items`
+- `payment-fault /internal/pricing`
+
+在慢 SQL 场景里，入口探测响应里会直接返回：
+
+- `faultMode`
+- `queryLabel`
+- `dbMs`
+- `totalMs`
+- `downstreamFaultMode`
+
+这就是首页 KPI、当前症状，以及后续 trace / SQL 诊断的第一层线索来源。
+
+### 2. SigNoz Trace 检索
+
+在拿到入口响应后，Lab 调查会继续查询 SigNoz Trace，重点看：
+
+- 当前入口路由是否有慢调用
+- 是否出现异常 span
+- 是否能捕捉到 `db.query.label`、`db.query.template`
+- Java -> catalog -> payment 的链路有没有异常扩散
+
+这部分会体现在界面的以下区域：
+
+- `Trace 证据`
+- 证据链里的 trace 结果
+- 调查时间线中的 `query_signoz_traces`
+
+### 3. MySQL 表结构与 EXPLAIN
+
+如果 trace 或入口响应里已经明确暴露出 SQL 相关线索，比如：
+
+- `slowOrdersByCustomerCast`
+- `db.query.template`
+- `db.query.label`
+- 明显的 `dbMs` 异常
+
+那么 Agent 不会停在“怀疑数据库慢”，而是继续拿只读 DB 证据：
+
+- `list_mysql_tables(database=order_lab)`
+- `describe_mysql_table(database=order_lab, table_name=orders)`
+- `describe_mysql_table(database=order_lab, table_name=order_items)`
+- `explain_mysql_query(database=order_lab, sql=...)`
+
+这部分能力会直接驱动 SQL 面板、EXPLAIN 片段，以及最终的索引失效判断。
+
+### 4. Kubernetes 资源与日志上下文
+
+虽然慢 SQL 场景最后收敛到数据库层，但整个系统依然会保留 K8S 上下文能力，用于其他场景或交叉验证：
+
+- Pod / Deployment 状态
+- Events
+- Pod Logs
+- 集群内 curl 探测
+
+这保证了它不会把所有问题都误判成 SQL 问题。比如 `null-pointer` 场景会优先走 Java 异常定位，`db-timeout` 会沿着 Java -> Go -> dependency 的链路收敛。
+
+### 5. 结构化结论与修复建议
+
+当 HTTP、Trace、SQL、K8S 证据都拿齐后，后端会把结果组织成固定的几个 section：
+
+- 当前症状
+- 工具调用
+- 证据链
+- 根因判断
+- 修复建议
+
+最终结果不会停留在一段原始 Markdown，而是会被前端重新组织为结构化调查界面：
+
+- 结论卡片
+- KPI 指标
+- 时间线
+- 证据面板
+- 修复建议代码块
+
+## 慢 SQL 场景的实际调查路径
+
+以当前慢 SQL 场景为例，系统的调查路径如下：
+
+1. 调用 `order-java-fault` 入口接口，拿到 `faultMode=slow-sql`、`queryLabel=slowOrdersByCustomerCast`、`dbMs=224`
+2. 查询 SigNoz Trace，确认慢点在数据库查询而不是下游 Go 服务
+3. 列出 `order_lab` 的表，并检查 `orders` / `order_items` 的结构与索引
+4. 对真实 SQL 模板执行 `EXPLAIN`
+5. 发现 `CAST(o.customer_id AS CHAR)` 让 `idx_orders_customer_id` 无法命中
+6. 发现 `order_items` 作为驱动表放大扫描成本
+7. 输出两类修复建议：
+   - 改写 Java 查询，移除 `CAST`
+   - 增加覆盖排序的复合索引
+
+最终会稳定收敛到以下判断：
+
+- 根因不是“服务报错”
+- 也不是“下游依赖异常”
+- 而是一个可以被 `EXPLAIN` 直接证明的应用层 SQL 退化问题
+
+## 整体架构
 
 ```mermaid
 graph TD
-    User["用户 / 前端"] -->|配置 & 指令| Backend["Python 后端 (大脑)"]
-    Backend -->|LLM 上下文| Gemini["阿里千问 Qwen / OpenAI 模型"]
-    Backend -->|MCP 工具调用| MCP["Go MCP 服务端 (双手)"]
-    MCP -->|K8s API| K8s["Kubernetes 集群"]
-    
-    subgraph "安全执行边界"
-        MCP
+    User["用户 / 浏览器<br/>Chat UI + Lab UI"] --> FE["React Frontend<br/>apps/frontend<br/>- 聊天工作台<br/>- Lab 调查台<br/>- 结果可视化"]
+    FE --> BE["FastAPI Backend<br/>apps/backend<br/>- Chat 编排<br/>- Lab 调查流程<br/>- 集群 / 会话管理"]
+
+    BE --> LLM["LLM Provider<br/>MiniMax / Qwen / OpenAI-compatible API<br/>- 推理<br/>- 工具选择<br/>- 结构化 Markdown 输出"]
+    BE --> MCP["Go MCP Server<br/>apps/mcp-server<br/>- K8S 工具<br/>- Trace 工具<br/>- MySQL 只读诊断"]
+
+    MCP --> K8S["Kubernetes 集群<br/>OrbStack 或远端集群<br/>- Namespace / Pod / Service / Deployment"]
+    MCP --> CH["SigNoz / ClickHouse<br/>observability namespace<br/>- Trace 存储<br/>- Span 证据查询"]
+    MCP --> MYSQL["Lab MySQL<br/>kube-copilot-lab<br/>- 表结构元数据<br/>- EXPLAIN 诊断"]
+
+    subgraph LAB["故障实验室运行时"]
+        OJ["order-java-fault<br/>Spring Boot<br/>- MySQL 查询路径<br/>- OTEL Span<br/>- slow-sql / null-pointer 注入"]
+        CAT["catalog-fault<br/>Go<br/>- 商品查询<br/>- payment fanout<br/>- cache-stampede 行为"]
+        PAY["payment-fault<br/>Go<br/>- 定价查询<br/>- db-timeout 模拟"]
+        OJ --> CAT
+        CAT --> PAY
+        OJ --> MYSQL
     end
-    
-    style User fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#0d47a1
-    style Backend fill:#fff3e0,stroke:#ef6c00,stroke-width:2px,color:#e65100
-    style MCP fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#1b5e20
-    style K8s fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#4a148c
+
+    K8S --> LAB
+    LAB --> OTEL["OTEL Collector<br/>signoz-otel-collector / otel-collector 别名服务"]
+    OTEL --> CH
+
+    Harness["Harness<br/>lab/harness<br/>- 回放场景<br/>- 对比模型<br/>- 输出评分"] --> BE
+    Harness --> LLM
+    Harness --> MCP
+
+    Legacy["Legacy Qwen-Agent Runner<br/>lab/legacy/qwen-agent"] -. 可选适配层 .-> Harness
 ```
 
----
+## 仓库结构
 
-## ⚡ 快速开始
+```text
+apps/
+  backend/        FastAPI 编排层与 API
+  frontend/       React / Vite 前端
+  mcp-server/     Go MCP Server，提供 K8S / Trace / SQL 工具
+  mcp-ssh-server/ 可选的 SSH 类 MCP 辅助组件
 
-### 前置条件
-- Docker & Docker Compose
-- 一个 Kubernetes 集群 (OrbStack, Minikube, or remote)
-- `~/.kube/config` 可访问
+lab/
+  deployments/    Lab 服务的 K8S 清单
+  observability/  SigNoz 安装与配置
+  services/       Go + Spring Boot 故障服务
+  scenarios/      Benchmark 场景定义
+  harness/        可重复执行的评测运行器
+  legacy/         旧版 Qwen-Agent 接入
 
-### 1. 克隆与安装
+runtime/
+  compose/        本地 compose 运行时数据
+```
+
+## Quick Start
+
+推荐分成两条主线来理解：
+
+1. 先把产品控制面拉起来：`frontend + backend + MCP`
+2. 再把故障实验室拉起来：`K8S + SigNoz + services`
+
+如果你想完整体验整条链路，两部分都需要启动。
+
+### 1. 环境准备
+
+- Docker / Docker Compose
+- Node.js 20+
+- Python 3.10+
+- Go 1.22+（如果你要本地编译 MCP）
+- `kubectl`
+- 一个可访问的 Kubernetes 集群
+- 至少一套模型 API Key
+
+### 2. 配置后端模型信息
+
 ```bash
-git clone https://github.com/YunMuZhe/Kause.git
-cd kause
+cp ./apps/backend/.env.example ./apps/backend/.env
 ```
 
-### 2. 配置密钥
-在 `backend/` 目录下创建 `.env` 文件：
+最少需要配置：
+
+```env
+APP_LLM__API_KEY=...
+APP_LLM__BASE_URL=https://api.minimax.chat/v1
+APP_LLM__MODEL_NAME=MiniMax-M2.7
+```
+
+如果后续要跑 Qwen 的 Harness 矩阵，也可以额外配置：
+
+```env
+DASHSCOPE_API_KEY=...
+```
+
+### 3. 启动产品控制面
+
+最快方式是直接使用 Docker Compose：
+
 ```bash
-cp backend/.env.example backend/.env
-# 编辑 backend/.env 并配置您的模型参数 (如 阿里千问/Dashscope, OpenAI)
-# APP_LLM__API_KEY=sk-xxx
-# APP_LLM__MODEL_NAME=qwen-max
+docker compose up --build
 ```
 
-### 3. 启动 (使用 Docker Compose)
+这会启动：
+
+- `apps/frontend`，默认访问地址是 [http://localhost:5173](http://localhost:5173)
+- `apps/backend`
+- `apps/mcp-server`
+- 产品侧本地 compose MySQL
+
+### 4. 为 OrbStack 构建 Lab 服务镜像
+
+如果你的 K8S 运行时使用的是 OrbStack Docker Engine，建议把镜像直接构建到对应 context：
+
 ```bash
-docker-compose up --build
+docker context use orbstack
+docker build -t kube-cluster-copilot/catalog-fault:latest ./lab/services/catalog-fault
+docker build -t kube-cluster-copilot/payment-fault:latest ./lab/services/payment-fault
+docker build -t kube-cluster-copilot/order-java-fault:latest ./lab/services/order-java-fault
 ```
-(注意：此命令会自动构建前端、后端及 MCP Server)
 
-访问 UI：`http://localhost:5173`。
+如果你不想切全局 context，也可以：
 
----
+```bash
+docker --context orbstack build -t kube-cluster-copilot/catalog-fault:latest ./lab/services/catalog-fault
+docker --context orbstack build -t kube-cluster-copilot/payment-fault:latest ./lab/services/payment-fault
+docker --context orbstack build -t kube-cluster-copilot/order-java-fault:latest ./lab/services/order-java-fault
+```
 
-## 🤝 贡献
-欢迎提交 PR！请查阅我们的 [贡献指南](CONTRIBUTING.md)。
+### 5. 在 Kubernetes 中安装 SigNoz
 
-## 📄 许可证
-MIT © 2024 Kause Team.
+```bash
+helm repo add signoz https://charts.signoz.io
+helm repo update
+helm upgrade --install signoz signoz/signoz \
+  --namespace observability \
+  --create-namespace \
+  -f ./lab/observability/signoz/values.yaml \
+  --wait \
+  --timeout 30m
+
+kubectl apply -f ./lab/observability/signoz/otel-collector-service.yaml
+```
+
+本地访问 SigNoz：
+
+```bash
+kubectl -n observability port-forward svc/signoz 3301:8080
+```
+
+浏览器打开：
+
+- [http://127.0.0.1:3301](http://127.0.0.1:3301)
+
+### 6. 部署故障实验室
+
+```bash
+kubectl apply -k ./lab/deployments/k8s/base
+
+kubectl -n kube-copilot-lab rollout status deploy/lab-mysql
+kubectl -n kube-copilot-lab rollout status deploy/catalog-fault
+kubectl -n kube-copilot-lab rollout status deploy/payment-fault
+kubectl -n kube-copilot-lab rollout status deploy/order-java-fault
+```
+
+### 7. 触发几个典型故障场景
+
+```bash
+kubectl -n kube-copilot-lab exec deploy/order-java-fault -- sh -lc \
+  'curl -sS "http://order-java-fault:8082/api/orders/checkout-preview?fault=slow-sql&downstreamFault=none&fanout=1&userId=42&tier=gold"'
+
+kubectl -n kube-copilot-lab exec deploy/order-java-fault -- sh -lc \
+  'curl -sS "http://order-java-fault:8082/api/orders/checkout-preview?fault=null-pointer&downstreamFault=none&fanout=1&userId=42&tier=gold"'
+
+kubectl -n kube-copilot-lab exec deploy/order-java-fault -- sh -lc \
+  'curl -sS "http://order-java-fault:8082/api/orders/checkout-preview?fault=none&downstreamFault=db-timeout&fanout=1&userId=42&tier=gold"'
+
+kubectl -n kube-copilot-lab exec deploy/catalog-fault -- sh -lc \
+  'curl -sS "http://catalog-fault:8080/api/catalog/items?fault=cache-stampede&fanout=5&tier=gold"'
+```
+
+### 8. 打开 Lab 页面
+
+前端入口：
+
+- [http://localhost:5173](http://localhost:5173)
+
+切换到 `Lab` 模式后，可以直接使用内置预设：
+
+- `slow-sql`
+- `null-pointer`
+- `db-timeout`
+- `cache-stampede`
+
+### 9. 运行 Harness 基准测试
+
+列出场景：
+
+```bash
+./lab/harness/run.sh --list-scenarios
+```
+
+执行单个场景：
+
+```bash
+./lab/harness/run.sh --scenario slow-sql
+```
+
+执行主场景矩阵：
+
+```bash
+./lab/harness/run.sh \
+  --scenario slow-sql \
+  --scenario null-pointer \
+  --scenario db-timeout \
+  --scenario cache-stampede \
+  --model-config lab/harness/models.yaml
+```
+
+产物默认输出到：
+
+```text
+lab/harness/output/
+```
+
+## 推荐日常使用路径
+
+如果你当前是在迭代 Agent 本身，比较推荐这个顺序：
+
+1. 启动 `frontend + backend`
+2. 确认 `observability` 与 `kube-copilot-lab` 正常
+3. 在 Lab 页面复现一个场景
+4. 去 SigNoz 查看 Trace
+5. 调整 Prompt、工具或 UI
+6. 对受影响场景重新跑 Harness
+
+这样可以把整个项目一直锚定在“可重复、可验证”的证据链上，而不是停留在一次性的演示。
+
+## 后续规划
+
+### 近期
+
+- 打磨核心场景的 Benchmark 基线
+- 在模型额度耗尽时提供更稳的 Harness 汇总结果
+- 继续提升 Lab UI 与调查报告的产品感
+- 补齐 GitHub 发布用截图与仓库说明
+
+### 下一阶段
+
+- 在前端加入多模型对比视图
+- 引入更多 Agent Framework 对比，而不只是一条 `openai-tools` 路径
+- 增加 Benchmark 趋势历史与回归检测
+- 强化集群 / 会话生命周期与可观测组件安装脚本
+
+### 更后面
+
+- 接入告警触发式故障入口
+- 自动化 Postmortem 与修复建议流程
+- GitHub / GitLab 代码上下文 MCP 集成
+- 打通 “检测 -> 调查 -> 建议 -> 验证” 的闭环
+
+## 相关文档
+
+- [apps/README.md](apps/README.md)
+- [lab/README.md](lab/README.md)
+- [lab/observability/signoz/README.md](lab/observability/signoz/README.md)
+- [lab/harness/README.md](lab/harness/README.md)

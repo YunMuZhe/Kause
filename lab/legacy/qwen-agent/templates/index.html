@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Kause Qwen Agent Lab</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f4f7fb;
+        --panel: #ffffff;
+        --muted: #5f6b7a;
+        --text: #18212b;
+        --border: #d7e0ea;
+        --accent: #1565c0;
+        --accent-soft: #e8f1fb;
+        --danger: #b3261e;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+      .page {
+        max-width: 1440px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+      .topbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: 20px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 28px;
+        font-weight: 700;
+      }
+      .subtitle {
+        color: var(--muted);
+        margin-top: 6px;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: 420px minmax(0, 1fr);
+        gap: 20px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 16px;
+      }
+      .panel h2 {
+        margin: 0 0 12px;
+        font-size: 16px;
+      }
+      .field {
+        margin-bottom: 14px;
+      }
+      label {
+        display: block;
+        margin-bottom: 6px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      input, textarea, button {
+        font: inherit;
+      }
+      input, textarea {
+        width: 100%;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px 12px;
+        background: #fff;
+        color: var(--text);
+      }
+      textarea {
+        min-height: 220px;
+        resize: vertical;
+        line-height: 1.5;
+      }
+      .actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      button {
+        border: 0;
+        border-radius: 8px;
+        padding: 10px 16px;
+        background: var(--accent);
+        color: #fff;
+        cursor: pointer;
+        font-weight: 600;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: wait;
+      }
+      .status {
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .status.error {
+        color: var(--danger);
+      }
+      .result-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+      }
+      .section-card {
+        min-height: 156px;
+      }
+      .section-card h3 {
+        margin: 0 0 10px;
+        font-size: 15px;
+      }
+      .section-body {
+        white-space: pre-wrap;
+        line-height: 1.6;
+        color: var(--text);
+      }
+      .tools {
+        margin-top: 16px;
+      }
+      .tool-item {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        overflow: hidden;
+        margin-bottom: 12px;
+      }
+      .tool-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        padding: 12px;
+        background: var(--accent-soft);
+      }
+      .tool-name {
+        font-weight: 600;
+      }
+      .tool-body {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+        padding: 12px;
+      }
+      pre {
+        margin: 0;
+        padding: 12px;
+        border-radius: 8px;
+        background: #0f1720;
+        color: #d9e2ec;
+        overflow: auto;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .empty {
+        color: var(--muted);
+        padding: 28px 0;
+      }
+      @media (max-width: 1080px) {
+        .layout { grid-template-columns: 1fr; }
+        .result-grid, .tool-body { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="topbar">
+        <div>
+          <h1>Kause Qwen Agent Lab</h1>
+          <div class="subtitle">触发一次真实排障，并把工具调用和最终结论拆开来看。</div>
+        </div>
+      </div>
+
+      <div class="layout">
+        <section class="panel">
+          <h2>排障触发</h2>
+          <div class="field">
+            <label for="namespace">Namespace</label>
+            <input id="namespace" value="{{ default_namespace }}">
+          </div>
+          <div class="field">
+            <label for="prompt">Prompt</label>
+            <textarea id="prompt">{{ default_prompt }}</textarea>
+          </div>
+          <div class="actions">
+            <button id="runButton">开始排查</button>
+            <span id="status" class="status">准备就绪</span>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>结构化结果</h2>
+          <div id="resultRoot" class="empty">还没有结果，点击左侧按钮开始。</div>
+        </section>
+      </div>
+    </div>
+
+    <script>
+      const runButton = document.getElementById("runButton");
+      const statusNode = document.getElementById("status");
+      const resultRoot = document.getElementById("resultRoot");
+      const namespaceInput = document.getElementById("namespace");
+      const promptInput = document.getElementById("prompt");
+      const sectionTitles = ["当前症状", "工具调用", "证据链", "根因判断", "修复建议"];
+
+      function setStatus(text, isError = false) {
+        statusNode.textContent = text;
+        statusNode.className = isError ? "status error" : "status";
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;");
+      }
+
+      function formatJson(value) {
+        if (value === null || value === undefined || value === "") {
+          return "";
+        }
+        if (typeof value === "string") {
+          return value;
+        }
+        return JSON.stringify(value, null, 2);
+      }
+
+      function renderSections(sections) {
+        return `
+          <div class="result-grid">
+            ${sectionTitles.map((title) => `
+              <div class="panel section-card">
+                <h3>${title}</h3>
+                <div class="section-body">${escapeHtml(sections?.[title] || "未提取到内容")}</div>
+              </div>
+            `).join("")}
+          </div>
+        `;
+      }
+
+      function renderTools(toolCalls) {
+        if (!toolCalls?.length) {
+          return '<div class="empty">这次运行里没有捕获到工具调用。</div>';
+        }
+        return `
+          <div class="tools">
+            ${toolCalls.map((item, index) => `
+              <div class="tool-item">
+                <div class="tool-head">
+                  <div class="tool-name">${index + 1}. ${escapeHtml(item.tool_name || "unknown-tool")}</div>
+                  <div>#${escapeHtml(item.function_id || "")}</div>
+                </div>
+                <div class="tool-body">
+                  <div>
+                    <div class="subtitle">Arguments</div>
+                    <pre>${escapeHtml(formatJson(item.arguments ?? item.arguments_raw))}</pre>
+                  </div>
+                  <div>
+                    <div class="subtitle">Result</div>
+                    <pre>${escapeHtml(formatJson(item.result ?? item.result_raw))}</pre>
+                  </div>
+                </div>
+              </div>
+            `).join("")}
+          </div>
+        `;
+      }
+
+      function renderResult(result) {
+        resultRoot.className = "";
+        resultRoot.innerHTML = `
+          ${renderSections(result.sections)}
+          <div class="panel" style="margin-top: 16px;">
+            <h2>工具时间线</h2>
+            ${renderTools(result.tool_calls)}
+          </div>
+          <div class="panel" style="margin-top: 16px;">
+            <h2>最终原文</h2>
+            <pre>${escapeHtml(result.final_markdown || "")}</pre>
+          </div>
+        `;
+      }
+
+      async function runInvestigation() {
+        runButton.disabled = true;
+        resultRoot.className = "empty";
+        resultRoot.textContent = "正在让 agent 排查，请稍等...";
+        setStatus("正在执行...");
+
+        try {
+          const response = await fetch("/api/investigate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              namespace: namespaceInput.value.trim(),
+              prompt: promptInput.value.trim()
+            })
+          });
+          const payload = await response.json();
+          if (!response.ok || !payload.ok) {
+            throw new Error(payload.error || `HTTP ${response.status}`);
+          }
+          renderResult(payload.result);
+          setStatus("执行完成");
+        } catch (error) {
+          resultRoot.className = "empty";
+          resultRoot.textContent = "执行失败，请看右上角状态。";
+          setStatus(error.message || "执行失败", true);
+        } finally {
+          runButton.disabled = false;
+        }
+      }
+
+      runButton.addEventListener("click", runInvestigation);
+    </script>
+  </body>
+</html>

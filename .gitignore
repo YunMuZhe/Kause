@@ -13,6 +13,10 @@ Thumbs.db
 .settings/
 .classpath
 
+mysql_data*
+mcp-server
+
+
 # Environment variables and secrets
 .env
 .env.*
@@ -78,6 +82,10 @@ mysql_data/
 # Logs
 *.log
 logs/
+runtime/*
+!runtime/README.md
+
+models.yaml
 
 # Local configuration
 local_settings.py

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: payment-fault-config
+  namespace: kube-copilot-lab
+data:
+  PORT: "8081"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector.observability.svc.cluster.local:4317"
+  OTEL_SERVICE_NAME: "payment-fault"
+  BASE_LATENCY_MS: "60"
+  DEPLOYMENT_ENVIRONMENT: "lab"
+  DB_HOST: "postgres.observability.svc.cluster.local"
+  DB_NAME: "payments"
+  DB_TIMEOUT_MS: "1600"
+  FAULT_MODE: "none"

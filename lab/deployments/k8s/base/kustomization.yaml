@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: kube-copilot-lab
+resources:
+  - namespace.yaml
+  - catalog-configmap.yaml
+  - payment-configmap.yaml
+  - mysql-secret.yaml
+  - mysql-init-configmap.yaml
+  - order-java-configmap.yaml
+  - mysql-deployment.yaml
+  - mysql-service.yaml
+  - catalog-deployment.yaml
+  - payment-deployment.yaml
+  - order-java-deployment.yaml
+  - catalog-service.yaml
+  - payment-service.yaml
+  - order-java-service.yaml

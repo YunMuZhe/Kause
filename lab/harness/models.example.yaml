@@ -1,0 +1,12 @@
+models:
+  - label: minimax-m2-7
+    model_name: MiniMax-M2.7
+    base_url: https://api.minimax.chat/v1
+    api_key_env: APP_LLM__API_KEY
+    temperature: 0.2
+
+  - label: qwen-max
+    model_name: qwen-max
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key_env: DASHSCOPE_API_KEY
+    temperature: 0.2

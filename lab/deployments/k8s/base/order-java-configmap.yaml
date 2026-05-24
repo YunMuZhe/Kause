@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: order-java-fault-config
+  namespace: kube-copilot-lab
+data:
+  PORT: "8082"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector.observability.svc.cluster.local:4317"
+  OTEL_SERVICE_NAME: "order-java-fault"
+  DEPLOYMENT_ENVIRONMENT: "lab"
+  DB_HOST: "lab-mysql"
+  DB_PORT: "3306"
+  DB_NAME: "order_lab"
+  DB_USER: "order_lab"
+  CATALOG_BASE_URL: "http://catalog-fault:8080"

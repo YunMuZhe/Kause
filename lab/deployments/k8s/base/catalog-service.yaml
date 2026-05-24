@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: catalog-fault
+  namespace: kube-copilot-lab
+spec:
+  selector:
+    app: catalog-fault
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

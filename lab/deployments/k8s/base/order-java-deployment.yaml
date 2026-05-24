@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-java-fault
+  namespace: kube-copilot-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: order-java-fault
+  template:
+    metadata:
+      labels:
+        app: order-java-fault
+    spec:
+      initContainers:
+        - name: wait-for-otel-collector
+          image: kube-cluster-copilot/order-java-fault:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until nc -z -w 2 otel-collector.observability.svc.cluster.local 4317; do
+                echo "waiting for signoz otel collector"
+                sleep 2
+              done
+        - name: wait-for-lab-mysql
+          image: kube-cluster-copilot/order-java-fault:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until nc -z -w 2 lab-mysql 3306; do
+                echo "waiting for lab mysql"
+                sleep 2
+              done
+      containers:
+        - name: order-java-fault
+          image: kube-cluster-copilot/order-java-fault:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8082
+          envFrom:
+            - configMapRef:
+                name: order-java-fault-config
+          env:
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: lab-mysql-secret
+                  key: app-password
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8082
+            initialDelaySeconds: 8
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8082
+            initialDelaySeconds: 15
+            periodSeconds: 10

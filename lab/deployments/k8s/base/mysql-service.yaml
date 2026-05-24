@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: lab-mysql
+  namespace: kube-copilot-lab
+spec:
+  selector:
+    app: lab-mysql
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306

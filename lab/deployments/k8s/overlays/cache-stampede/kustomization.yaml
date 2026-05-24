@@ -1,0 +1,40 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+configMapGenerator:
+  - name: catalog-fault-config
+    namespace: kube-copilot-lab
+    behavior: merge
+    literals:
+      - FAULT_MODE=cache-stampede
+  - name: payment-fault-config
+    namespace: kube-copilot-lab
+    behavior: merge
+    literals:
+      - FAULT_MODE=cache-stampede
+generatorOptions:
+  disableNameSuffixHash: true
+patches:
+  - target:
+      kind: Deployment
+      name: catalog-fault
+      namespace: kube-copilot-lab
+    patch: |-
+      - op: add
+        path: /spec/template/metadata/annotations
+        value: {}
+      - op: add
+        path: /spec/template/metadata/annotations/lab.kube-copilot.dev~1fault-scenario
+        value: cache-stampede
+  - target:
+      kind: Deployment
+      name: payment-fault
+      namespace: kube-copilot-lab
+    patch: |-
+      - op: add
+        path: /spec/template/metadata/annotations
+        value: {}
+      - op: add
+        path: /spec/template/metadata/annotations/lab.kube-copilot.dev~1fault-scenario
+        value: cache-stampede

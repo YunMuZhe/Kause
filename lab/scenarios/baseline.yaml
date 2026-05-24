@@ -1,0 +1,41 @@
+name: baseline
+label: 正常链路
+description: Java -> catalog -> payment 全链路正常返回
+namespace: kube-copilot-lab
+service_entry: order-java-fault
+request_params:
+  fault: none
+  downstreamFault: none
+  fanout: 1
+  userId: 42
+  tier: gold
+tags:
+  - baseline
+  - healthy
+expectations:
+  root_cause_keywords:
+    - 正常
+    - 未发现
+    - 无明显故障
+    - 链路正常
+  root_cause_min_hits: 1
+  evidence_keywords:
+    - trace
+  evidence_min_hits: 1
+  trace_keywords:
+    - /api/orders/checkout-preview
+  trace_min_hits: 1
+  forbidden_trace_routes:
+    - /healthz
+    - /readyz
+  require_non_health_trace: true
+  required_tools:
+    - probe_service_http
+    - query_signoz_traces
+  forbidden_tools:
+    - explain_mysql_query
+  required_sections:
+    - 当前症状
+    - 证据链
+    - 根因判断
+    - 修复建议

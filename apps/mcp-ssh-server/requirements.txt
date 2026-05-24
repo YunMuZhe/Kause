@@ -1,0 +1,3 @@
+mcp[cli]
+paramiko
+python-dotenv

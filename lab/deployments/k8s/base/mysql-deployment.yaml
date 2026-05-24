@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lab-mysql
+  namespace: kube-copilot-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lab-mysql
+  template:
+    metadata:
+      labels:
+        app: lab-mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3306
+          env:
+            - name: MYSQL_DATABASE
+              value: order_lab
+            - name: MYSQL_USER
+              value: order_lab
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: lab-mysql-secret
+                  key: app-password
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: lab-mysql-secret
+                  key: root-password
+          volumeMounts:
+            - name: mysql-data
+              mountPath: /var/lib/mysql
+            - name: mysql-init
+              mountPath: /docker-entrypoint-initdb.d
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - MYSQL_PWD="$MYSQL_PASSWORD" mysqladmin ping -h 127.0.0.1 -u "$MYSQL_USER"
+            initialDelaySeconds: 8
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - MYSQL_PWD="$MYSQL_PASSWORD" mysqladmin ping -h 127.0.0.1 -u "$MYSQL_USER"
+            initialDelaySeconds: 20
+            periodSeconds: 10
+      volumes:
+        - name: mysql-data
+          emptyDir: {}
+        - name: mysql-init
+          configMap:
+            name: lab-mysql-init
